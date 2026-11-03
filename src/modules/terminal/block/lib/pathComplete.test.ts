@@ -14,6 +14,7 @@ const { invoke, platform, workspace } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@/modules/workspace", () => ({
   currentWorkspaceEnv: () => workspace.env,
+  localWorkspaceEnv: () => workspace.env,
 }));
 vi.mock("@/lib/platform", () => ({
   get IS_WINDOWS() {

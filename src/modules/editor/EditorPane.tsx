@@ -1,6 +1,7 @@
 import { endpointIdFromCompatModel } from "@/modules/ai/config";
 import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
 import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
 import { acceptCompletion, startCompletion } from "@codemirror/autocomplete";
@@ -90,6 +91,8 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
+  /** Fork-only (SSH port): remote host of this file; absent means local. */
+  workspace?: WorkspaceEnv;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
@@ -113,6 +116,7 @@ export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
     const {
       path,
+      workspace,
       overrideLanguage,
       onDirtyChange,
       onSaved,
@@ -123,6 +127,7 @@ export const EditorPane = memo(
     const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
       useDocument({
         path,
+        workspace,
         onDirtyChange,
       });
     const reloadRef = useRef(reload);
@@ -229,7 +234,8 @@ export const EditorPane = memo(
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
       if (!saved) return;
-      if (prefs.editorFormatOnSave && formatter !== "lsp") {
+      // Fork-only (SSH port): external formatters run locally; skip remote files.
+      if (prefs.editorFormatOnSave && formatter !== "lsp" && !workspace) {
         const error = await runExternalFormatter(
           formatter,
           pathRef.current,
@@ -248,7 +254,7 @@ export const EditorPane = memo(
         }
       }
       onSavedRef.current?.();
-    }, []);
+    }, [workspace]);
     const performSaveRef = useRef(performSave);
     performSaveRef.current = performSave;
 
@@ -428,7 +434,12 @@ export const EditorPane = memo(
       });
     }, [doc]);
 
-    const lspExt = useLspExtension(path, langId, doc.status === "ready");
+    // Fork-only (SSH port): language servers run locally, never for a remote file.
+    const lspExt = useLspExtension(
+      path,
+      workspace ? null : langId,
+      doc.status === "ready",
+    );
     useEffect(() => {
       lspActiveRef.current = lspExt !== null;
       const view = cmRef.current?.view;

@@ -8,6 +8,7 @@ const { invoke, workspace } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@/modules/workspace", () => ({
   currentWorkspaceEnv: () => workspace,
+  localWorkspaceEnv: () => workspace,
 }));
 vi.mock("@/lib/platform", () => ({ IS_WINDOWS: false }));
 import { makeCompletionSource } from "./shellEditor";

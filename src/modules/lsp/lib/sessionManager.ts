@@ -1,5 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv } from "@/modules/workspace";
 import type { Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
@@ -64,7 +64,7 @@ export async function acquireDocExtension(
   path: string,
   langId: string,
 ): Promise<LspDocHandle | null> {
-  if (currentWorkspaceEnv().kind !== "local") return null;
+  if (localWorkspaceEnv().kind !== "local") return null;
   const prefs = usePreferencesStore.getState();
   const preset = serverForLanguage(
     langId,

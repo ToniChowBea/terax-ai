@@ -11,6 +11,7 @@ export {
   type CloseTabsPlan,
   type Tab,
   type EditorTab,
+  type RemoteFileEnv,
   type PreviewTab,
   type MarkdownTab,
   type AiDiffTab,

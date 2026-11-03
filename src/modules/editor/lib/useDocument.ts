@@ -1,6 +1,6 @@
 import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -25,10 +25,22 @@ export type DocumentState =
 
 type Options = {
   path: string;
+  /**
+   * Fork-only (SSH port): the host the file lives on. Absent means local.
+   * Fixed per tab, so a local file never goes to a remote backend when the
+   * Explorer is following a remote host, and vice versa.
+   */
+  workspace?: WorkspaceEnv;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function useDocument({ path, onDirtyChange }: Options) {
+export function useDocument({ path, workspace, onDirtyChange }: Options) {
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const envFor = useCallback(
+    () => workspaceRef.current ?? localWorkspaceEnv(),
+    [],
+  );
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
 
@@ -63,7 +75,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     const mtime = await invoke<number>("fs_write_file", {
       path,
       content: restoreEol(content, eolRef.current),
-      workspace: currentWorkspaceEnv(),
+      workspace: envFor(),
       source: "editor",
     });
     diskMtimeRef.current = mtime;
@@ -71,7 +83,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     // Edits typed while the write was in flight must stay dirty.
     setDirty(bufferRef.current !== content);
     notifyDocumentSaved(path);
-  }, [path]);
+  }, [path, envFor]);
 
   // False when the write was withheld because the file changed on disk
   // since load; overwriting is an explicit user action from the toast.
@@ -80,7 +92,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     if (known !== null) {
       const stat = await invoke<FileStat>("fs_stat", {
         path,
-        workspace: currentWorkspaceEnv(),
+        workspace: envFor(),
       }).catch(() => null);
       if (stat && stat.mtime !== known) {
         const name = path.split(/[\\/]/).pop() ?? path;
@@ -94,7 +106,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     }
     await writeToDisk();
     return true;
-  }, [path, writeToDisk]);
+  }, [path, writeToDisk, envFor]);
 
   // Notify parent of dirty transitions.
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -131,10 +143,10 @@ export function useDocument({ path, onDirtyChange }: Options) {
     (force: boolean) =>
       invoke<ReadResult>("fs_read_file", {
         path,
-        workspace: currentWorkspaceEnv(),
+        workspace: envFor(),
         force,
       }),
-    [path],
+    [path, envFor],
   );
 
   // Load on path change.

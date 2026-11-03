@@ -20,6 +20,12 @@ export type WslDistro = {
 
 type State = {
   env: WorkspaceEnv;
+  /**
+   * Fork-only (SSH port): the last env that is not a remote host. The Explorer
+   * follows the active tab onto a remote host, but local-only things (local
+   * shells, LSP, theme files, local editor tabs) must keep using this one.
+   */
+  localEnv: WorkspaceEnv;
   distros: WslDistro[];
   loading: boolean;
   error: string | null;
@@ -31,11 +37,12 @@ export const LOCAL_WORKSPACE: WorkspaceEnv = { kind: "local" };
 
 export const useWorkspaceEnvStore = create<State>((set) => ({
   env: LOCAL_WORKSPACE,
+  localEnv: LOCAL_WORKSPACE,
   distros: [],
   loading: false,
   error: null,
   setEnv: (env) => {
-    set({ env });
+    set(env.kind === "ssh" ? { env } : { env, localEnv: env });
     if (env.kind === "wsl") void setLastWslDistro(env.distro);
   },
   refreshDistros: async () => {
@@ -53,6 +60,26 @@ export const useWorkspaceEnvStore = create<State>((set) => ({
 
 export function currentWorkspaceEnv(): WorkspaceEnv {
   return useWorkspaceEnvStore.getState().env;
+}
+
+/**
+ * Fork-only (SSH port): the env for things that only ever run on this
+ * machine. Equal to `currentWorkspaceEnv()` unless the Explorer is currently
+ * following a remote host, in which case it is the local (or WSL) env that
+ * was active before. A local path must never be sent to a remote backend.
+ */
+export function localWorkspaceEnv(): WorkspaceEnv {
+  return useWorkspaceEnvStore.getState().localEnv;
+}
+
+/** Same environment for document identity: a host, not a connection id. */
+export function sameWorkspace(
+  a: WorkspaceEnv | undefined,
+  b: WorkspaceEnv | undefined,
+): boolean {
+  const key = (e: WorkspaceEnv | undefined) =>
+    e && e.kind === "ssh" ? workspaceScopeKey(e) : "local-side";
+  return key(a) === key(b);
 }
 
 export function workspaceScopeKey(env: WorkspaceEnv): string {

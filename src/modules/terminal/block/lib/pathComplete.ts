@@ -1,5 +1,5 @@
 import { escapeForShell, unescapeForShell } from "@/lib/shellQuote";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv } from "@/modules/workspace";
 import {
   type Completion,
   type CompletionContext,
@@ -42,7 +42,7 @@ export async function pathCompletions(
   token: string,
   cwd: string,
 ): Promise<PathResult | null> {
-  const workspace = currentWorkspaceEnv();
+  const workspace = localWorkspaceEnv();
   const windows = usesWindowsShell();
   const parts = pathParts(token, windows);
   if (!parts) return null;
@@ -58,7 +58,7 @@ export async function pathCompletions(
   } catch {
     return null;
   }
-  if (currentWorkspaceEnv() !== workspace) return null;
+  if (localWorkspaceEnv() !== workspace) return null;
   const initialPrefix = parts.prefix.toLowerCase();
   const matches: DirEntry[] = [];
   let truncated = false;
@@ -98,7 +98,7 @@ export async function pathCompletions(
       const nextParts = pathParts(nextToken, windows);
       if (
         !nextParts ||
-        currentWorkspaceEnv() !== workspace ||
+        localWorkspaceEnv() !== workspace ||
         nextParts.directory !== parts.directory ||
         nextParts.prefix.startsWith(".") !== parts.prefix.startsWith(".") ||
         !nextParts.prefix.toLowerCase().startsWith(initialPrefix) ||

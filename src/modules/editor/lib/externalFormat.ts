@@ -1,6 +1,6 @@
 import { quoteShellArg } from "@/lib/shellQuote";
 import type { EditorFormatter } from "@/modules/settings/store";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv } from "@/modules/workspace";
 import type { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -130,7 +130,7 @@ export async function runExternalFormatter(
       command,
       cwd: dirname(path),
       timeoutSecs: 20,
-      workspace: currentWorkspaceEnv(),
+      workspace: localWorkspaceEnv(),
     });
     if (out.timed_out) return `${formatter} timed out`;
     if (out.exit_code !== 0) {
@@ -147,7 +147,7 @@ export async function readFileText(
 ): Promise<{ text: string; mtime: number } | null> {
   const res = await invoke<ReadResult>("fs_read_file", {
     path,
-    workspace: currentWorkspaceEnv(),
+    workspace: localWorkspaceEnv(),
   }).catch(() => null);
   if (res?.kind !== "text" || res.content == null) return null;
   return { text: res.content, mtime: res.mtime ?? 0 };

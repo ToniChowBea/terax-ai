@@ -1,6 +1,6 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
@@ -21,13 +21,20 @@ type Status =
 
 type Props = {
   path: string;
+  /** Fork-only (SSH port): remote host of this file; absent means local. */
+  workspace?: WorkspaceEnv;
   visible: boolean;
   onSetView: (mode: "rendered" | "raw") => void;
 };
 
 const components = { a: MarkdownLink, code: MarkdownCode };
 
-export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
+export function MarkdownPreviewPane({
+  path,
+  workspace,
+  visible,
+  onSetView,
+}: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
 
   useEffect(() => {
@@ -35,7 +42,7 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
     setStatus({ kind: "loading" });
     invoke<ReadResult>("fs_read_file", {
       path,
-      workspace: currentWorkspaceEnv(),
+      workspace: workspace ?? localWorkspaceEnv(),
     })
       .then((res) => {
         if (cancelled) return;
@@ -53,7 +60,7 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, workspace]);
 
   return (
     <div

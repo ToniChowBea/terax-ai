@@ -17,7 +17,7 @@ import {
   unbindLeafPty,
 } from "@/modules/terminal/lib/ptyPresentation";
 import { tokenBytes } from "@/modules/terminal/lib/ptyWire";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { localWorkspaceEnv } from "@/modules/workspace";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 
@@ -158,7 +158,7 @@ export async function openPty(
       cols,
       rows,
       cwd: cwd ?? null,
-      workspace: currentWorkspaceEnv(),
+      workspace: localWorkspaceEnv(),
       blocks: blocks ?? false,
       shell: shell ?? null,
       paneId: paneId ?? null,

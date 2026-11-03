@@ -6,7 +6,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { IS_WINDOWS } from "@/lib/platform";
-import { useRemoteWorkspaceStore } from "@/modules/remotes";
+import { useRemoteHostsStore, useRemotesStore } from "@/modules/remotes";
 import {
   LOCAL_WORKSPACE,
   useWorkspaceEnvStore,
@@ -26,15 +26,25 @@ type Props = {
  * one-item picker would be noise.
  */
 export function WorkspaceEnvSelector({ onSelect }: Props) {
-  const remote = useRemoteWorkspaceStore((s) => s.active);
-  if (!IS_WINDOWS && !remote) return null;
+  const env = useWorkspaceEnvStore((s) => s.env);
+  if (!IS_WINDOWS && env.kind !== "ssh") return null;
   return <WorkspaceEnvPicker onSelect={onSelect} />;
 }
 
 function WorkspaceEnvPicker({ onSelect }: Props) {
-  const remote = useRemoteWorkspaceStore((s) => s.active);
-  const closeRemote = useRemoteWorkspaceStore((s) => s.close);
   const env = useWorkspaceEnvStore((s) => s.env);
+  const localEnv = useWorkspaceEnvStore((s) => s.localEnv);
+  // Fork-only (SSH port): the host whose files are in view, if any. Which
+  // machine is in view follows the active tab; this picker only reports it
+  // and offers to disconnect it.
+  const remote = useRemoteHostsStore((s) =>
+    env.kind === "ssh" ? s.hosts[env.profileId] : undefined,
+  );
+  const remoteName = useRemotesStore((s) =>
+    env.kind === "ssh"
+      ? s.profiles.find((p) => p.id === env.profileId)?.name
+      : undefined,
+  );
   const distros = useWorkspaceEnvStore((s) => s.distros);
   const loading = useWorkspaceEnvStore((s) => s.loading);
   const error = useWorkspaceEnvStore((s) => s.error);
@@ -47,11 +57,14 @@ function WorkspaceEnvPicker({ onSelect }: Props) {
   };
 
   const localLabel = IS_WINDOWS ? "Windows Local" : "Local";
+  const shown = env.kind === "ssh" ? localEnv : env;
   const label =
-    env.kind === "ssh" && remote
-      ? `${remote.user}@${remote.host}`
-      : env.kind === "wsl"
-        ? `WSL: ${env.distro}`
+    env.kind === "ssh"
+      ? remote
+        ? `${remote.user}@${remote.host}`
+        : (remoteName ?? "Remote")
+      : shown.kind === "wsl"
+        ? `WSL: ${shown.distro}`
         : localLabel;
 
   return (
@@ -74,34 +87,19 @@ function WorkspaceEnvPicker({ onSelect }: Props) {
         <DropdownMenuItem onSelect={() => void onSelect(LOCAL_WORKSPACE)}>
           {localLabel}
         </DropdownMenuItem>
-        {remote ? (
+        {env.kind === "ssh" ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={() =>
-                void onSelect({
-                  kind: "ssh",
-                  conn: remote.conn,
-                  profileId: remote.profileId,
-                })
-              }
-            >
-              {remote.user}@{remote.host}
+            <DropdownMenuItem disabled>
+              Files follow the active tab
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
-              onSelect={() => {
-                void (async () => {
-                  // Leave the remote first so nothing keeps querying a
-                  // connection that is about to go away. The switch can be
-                  // refused (unsaved editor tabs); disconnecting anyway would
-                  // strand those edits with no way to save them.
-                  if (!(await onSelect(LOCAL_WORKSPACE))) return;
-                  await closeRemote();
-                })();
-              }}
+              onSelect={() =>
+                void useRemoteHostsStore.getState().close(env.profileId)
+              }
             >
-              Disconnect remote workspace
+              Disconnect file access to {remoteName ?? "this host"}
             </DropdownMenuItem>
           </>
         ) : null}

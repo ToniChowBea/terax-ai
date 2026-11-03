@@ -90,6 +90,11 @@ export function useWorkspaceSwitcher({
 
   const switchWorkspace = useCallback(
     async (env: WorkspaceEnv): Promise<boolean> => {
+      // Fork-only (SSH port): a remote host is never switched to wholesale
+      // (that reset every tab and left the local root in place, the
+      // "could not list /Users/..." bug). The file views follow the active
+      // host tab instead; see resolveFileView in modules/remotes.
+      if (env.kind === "ssh") return false;
       // The scope key is the canonical identity of an environment and covers
       // every variant, so switching to the one already active is a no-op.
       if (workspaceScopeKey(env) === workspaceScopeKey(workspaceEnv)) {
@@ -129,6 +134,9 @@ export function useWorkspaceSwitcher({
 
   const adoptWorkspaceEnv = useCallback(
     async (env: WorkspaceEnv): Promise<string | null> => {
+      // Fork-only (SSH port): see switchWorkspace. A space restored with a
+      // remote env (never persisted, but be defensive) adopts local instead.
+      if (env.kind === "ssh") env = LOCAL_WORKSPACE;
       setWorkspaceEnv(env.kind === "local" ? LOCAL_WORKSPACE : env);
       let nextHome: string;
       try {

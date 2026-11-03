@@ -65,7 +65,15 @@ export type EditorTab = TabBase & {
    */
   preview: boolean;
   overrideLanguage?: string | null;
+  /**
+   * Fork-only (SSH port): the remote host this file lives on. Absent for local
+   * files, which keep using the app's local env.
+   */
+  workspace?: RemoteFileEnv;
 };
+
+/** Fork-only (SSH port): where a remote editor or markdown tab's file lives. */
+export type RemoteFileEnv = { kind: "ssh"; conn: number; profileId: string };
 
 export type PreviewTab = TabBase & {
   id: number;
@@ -79,6 +87,8 @@ export type MarkdownTab = TabBase & {
   kind: "markdown";
   title: string;
   path: string;
+  /** Fork-only (SSH port): see EditorTab.workspace. */
+  workspace?: RemoteFileEnv;
 };
 
 export type AiDiffStatus = "pending" | "approved" | "rejected";
@@ -159,7 +169,20 @@ export type GitDiffOpenInput = {
 export type OpenFileTabOptions = {
   spaceId?: string;
   activate?: boolean;
+  /** Fork-only (SSH port): open the path on this remote host. */
+  workspace?: RemoteFileEnv;
 };
+
+/**
+ * Fork-only (SSH port): a local `/etc/hosts` and the server's `/etc/hosts`
+ * are different files, so tab reuse compares the host too.
+ */
+function sameFileHost(
+  a: RemoteFileEnv | undefined,
+  b: RemoteFileEnv | undefined,
+): boolean {
+  return (a?.profileId ?? null) === (b?.profileId ?? null);
+}
 
 export type CloseTabsPlan = {
   closeIds: number[];
@@ -178,12 +201,14 @@ export function planMarkdownTabOpen(
   path: string,
   spaceId: string,
   allocId: () => number,
+  workspace?: RemoteFileEnv,
 ): { tabs: Tab[]; tabId: number } {
   const pathKey = path.replace(/\\/g, "/");
   const existing = tabs.find(
     (tab) =>
       tab.kind === "markdown" &&
       tab.spaceId === spaceId &&
+      sameFileHost(tab.workspace, workspace) &&
       tab.path.replace(/\\/g, "/") === pathKey,
   );
   if (existing) return { tabs, tabId: existing.id };
@@ -198,6 +223,7 @@ export function planMarkdownTabOpen(
         spaceId,
         title: basename(path),
         path,
+        ...(workspace && { workspace }),
       },
     ],
     tabId,
@@ -210,12 +236,16 @@ export function planFileTabOpen(
   pin: boolean,
   spaceId: string,
   allocId: () => number,
+  workspace?: RemoteFileEnv,
 ): { tabs: Tab[]; tabId: number } {
+  const here = (tab: Tab) =>
+    tab.kind === "editor" &&
+    tab.spaceId === spaceId &&
+    tab.path === path &&
+    sameFileHost(tab.workspace, workspace);
+  const remote = workspace ? { workspace } : {};
   if (pin) {
-    const existing = tabs.find(
-      (tab) =>
-        tab.kind === "editor" && tab.spaceId === spaceId && tab.path === path,
-    );
+    const existing = tabs.find(here);
     if (existing?.kind === "editor") {
       return {
         tabs: existing.preview
@@ -239,6 +269,7 @@ export function planFileTabOpen(
           path,
           dirty: false,
           preview: false,
+          ...remote,
         },
       ],
       tabId,
@@ -246,20 +277,12 @@ export function planFileTabOpen(
   }
 
   const persistent = tabs.find(
-    (tab) =>
-      tab.kind === "editor" &&
-      tab.spaceId === spaceId &&
-      tab.path === path &&
-      !tab.preview,
+    (tab) => here(tab) && tab.kind === "editor" && !tab.preview,
   );
   if (persistent) return { tabs, tabId: persistent.id };
 
   const existingPreview = tabs.find(
-    (tab) =>
-      tab.kind === "editor" &&
-      tab.spaceId === spaceId &&
-      tab.path === path &&
-      tab.preview,
+    (tab) => here(tab) && tab.kind === "editor" && tab.preview,
   );
   if (existingPreview) return { tabs, tabId: existingPreview.id };
 
@@ -275,6 +298,7 @@ export function planFileTabOpen(
     path,
     dirty: false,
     preview: true,
+    ...remote,
   };
   if (previewIndex === -1) return { tabs: [...tabs, tab], tabId };
 
@@ -911,6 +935,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         pin,
         targetSpaceId,
         () => nextIdRef.current++,
+        options.workspace,
       );
       tabsRef.current = plan.tabs;
       setTabs(plan.tabs);
@@ -1041,13 +1066,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   // With") would otherwise have the queued markdown update clobbered by
   // openFileTab's setTabs(plan.tabs), which is built from the stale ref.
   const newMarkdownTab = useCallback(
-    (path: string) => {
+    (path: string, workspace?: RemoteFileEnv) => {
       const curr = tabsRef.current;
       const plan = planMarkdownTabOpen(
         curr,
         path,
         activeSpaceIdRef.current,
         () => nextIdRef.current++,
+        workspace,
       );
       if (plan.tabs !== curr) {
         tabsRef.current = plan.tabs;

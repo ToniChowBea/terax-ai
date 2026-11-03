@@ -4,6 +4,8 @@ export {
   getWslHome,
   isRemoteEnv,
   LOCAL_WORKSPACE,
+  localWorkspaceEnv,
+  sameWorkspace,
   parseWorkspaceScopeKey,
   useWorkspaceEnvStore,
   workspaceScopeKey,

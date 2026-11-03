@@ -44,6 +44,7 @@ import { HostDialog } from "./HostDialog";
 import { RemoteFiles } from "./RemoteFiles";
 import { RemoteGit } from "./RemoteGit";
 import { useFollowTerminal, useRemoteBrowserStore } from "./lib/browser";
+import { useRemoteHostsStore } from "./lib/hosts";
 import { useRemoteSections } from "./lib/sections";
 import { TransferDialog } from "./TransferDialog";
 import { emptyProfile, useRemotesStore } from "./lib/store";
@@ -103,7 +104,9 @@ export function RemotesPanel({
 
   const toggleForward = useCallback(
     (profile: RemoteProfile, forward: RemoteForward) => {
-      const conn = activeWorkspaceId === profile.id ? activeWorkspaceConn : null;
+      const conn =
+        useRemoteHostsStore.getState().hosts[profile.id]?.conn ??
+        (activeWorkspaceId === profile.id ? activeWorkspaceConn : null);
       const running = findActiveForward(
         useTunnelStore.getState().active,
         conn ?? -1,
@@ -714,9 +717,11 @@ function HostRow({
 } & Omit<HostDragProps, "draggingId">) {
   const store = useRemotesStore.getState();
   const isWorkspace = activeWorkspaceId === profile.id;
-  // Forwards ride on this profile's own connection, which only exists while
-  // it is the open workspace.
-  const connForProfile = isWorkspace ? activeWorkspaceConn : null;
+  // Fork-only (SSH port): forwards ride on the host's shared connection,
+  // which exists while any tab or file view of the host is open.
+  const hostConn = useRemoteHostsStore((s) => s.hosts[profile.id]?.conn);
+  const connForProfile =
+    hostConn ?? (isWorkspace ? activeWorkspaceConn : null);
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -772,7 +777,7 @@ function HostRow({
           Open terminal
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onOpenWorkspace(profile)}>
-          {isWorkspace ? "Reopen as workspace" : "Open as workspace"}
+          Browse files in Explorer
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => onEdit(profile)}>
@@ -823,7 +828,7 @@ function HostRow({
                 <>
                   <ContextMenuSeparator />
                   <ContextMenuItem disabled>
-                    Open as workspace first
+                    Connect to the host first
                   </ContextMenuItem>
                 </>
               ) : null}

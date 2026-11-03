@@ -34,6 +34,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@/modules/workspace", () => ({
   currentWorkspaceEnv: () => null,
+  localWorkspaceEnv: () => null,
 }));
 
 // The bridge owns a process-wide hub, so every test gets a fresh module graph.

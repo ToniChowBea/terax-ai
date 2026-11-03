@@ -5,6 +5,7 @@ import {
   watchRemove,
 } from "@/modules/explorer/lib/watch";
 import type { Tab } from "@/modules/tabs";
+import { localWorkspaceEnv } from "@/modules/workspace";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { type RefObject, useEffect, useRef } from "react";
 import type { EditorPaneHandle } from "./EditorPane";
@@ -68,19 +69,24 @@ export function useEditorFileSync({ tabs, tabsRef, editorRefs }: Params) {
     const wantDirs = new Set<string>();
     const wantFiles = new Set<string>();
     for (const t of tabs) {
-      if (t.kind !== "editor") continue;
+      // Fork-only (SSH port): remote files have no watcher (SFTP has no
+      // change notification), and their paths must not reach the local one.
+      if (t.kind !== "editor" || t.workspace) continue;
       wantDirs.add(parentDir(t.path));
       wantFiles.add(t.path);
     }
     const prevDirs = editorWatchRef.current;
     const prevFiles = editorFilesRef.current;
+    const local = localWorkspaceEnv();
     watchAdd(
       [...wantDirs].filter((d) => !prevDirs.has(d)),
       [...wantFiles].filter((f) => !prevFiles.has(f)),
+      local,
     );
     watchRemove(
       [...prevDirs].filter((d) => !wantDirs.has(d)),
       [...prevFiles].filter((f) => !wantFiles.has(f)),
+      local,
     );
     editorWatchRef.current = wantDirs;
     editorFilesRef.current = wantFiles;
@@ -92,7 +98,7 @@ export function useEditorFileSync({ tabs, tabsRef, editorRefs }: Params) {
     void listenFsChanged((paths) => {
       const changed = new Set(paths.map((p) => p.replace(/\\/g, "/")));
       for (const t of tabsRef.current) {
-        if (t.kind !== "editor") continue;
+        if (t.kind !== "editor" || t.workspace) continue;
         if (changed.has(t.path.replace(/\\/g, "/"))) {
           editorRefs.current.get(t.id)?.reload();
         }

@@ -64,8 +64,10 @@ import {
   RemotePrompts,
   type RemoteProfile,
   RemotesPanel,
+  resolveFileView,
   useBrowserTracksTabs,
   useRemoteBrowserStore,
+  useRemoteHostsStore,
   useRemotesStore,
   useRemoteWorkspaceStore,
 } from "@/modules/remotes";
@@ -278,14 +280,32 @@ export default function App() {
 
   const handleWorkspaceChange = useCallback(
     async (env: WorkspaceEnv): Promise<boolean> => {
+      // Fork-only (SSH port): while a remote host is in view, "Local" means
+      // "look at local files again": bring a local tab forward. The local env
+      // itself never changed, so nothing is torn down.
+      const store = useWorkspaceEnvStore.getState();
+      if (
+        store.env.kind === "ssh" &&
+        workspaceScopeKey(env) === workspaceScopeKey(store.localEnv)
+      ) {
+        const local = tabsRef.current.find(
+          (t) =>
+            !(t.kind === "terminal" && t.remoteId) &&
+            !((t.kind === "editor" || t.kind === "markdown") && t.workspace),
+        );
+        if (local) setActiveId(local.id);
+        else openNewTabRef.current?.();
+        return true;
+      }
       const switched = await switchWorkspace(env);
       if (switched && activeSpaceId) {
         useSpaces.getState().setEnv(activeSpaceId, env);
       }
       return switched;
     },
-    [switchWorkspace, activeSpaceId],
+    [switchWorkspace, activeSpaceId, setActiveId],
   );
+  const openNewTabRef = useRef<(() => void) | null>(null);
 
   useSpacesBoot({
     ready: launchCwdResolved,
@@ -400,11 +420,59 @@ export default function App() {
   useEditorFileSync({ tabs, tabsRef, editorRefs });
   useThemeFileEditing({ tabsRef, openFileTab });
 
-  const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
-    activeTab,
-    tabs,
-    launchCwd ?? home,
+  const { explorerRoot: localExplorerRoot, inheritedCwdForNewTab } =
+    useWorkspaceCwd(activeTab, tabs, launchCwd ?? home);
+
+  // ---- Fork-only (SSH port): the file views follow the active host tab ----
+  // Explorer, Cmd+Shift+F search, content search and source control look at
+  // the remote host while one of its tabs (terminal, or a remote file) is
+  // active, and at the local machine otherwise. Root and env are resolved
+  // together so a local root is never listed on the server, and vice versa.
+  const localEnv = useWorkspaceEnvStore((s) => s.localEnv);
+  const remoteHosts = useRemoteHostsStore((s) => s.hosts);
+  const remoteWorkspaceRoots = useRemoteHostsStore((s) => s.workspaceRoots);
+  const remoteLastCwd = useRemoteHostsStore((s) => s.lastCwd);
+  const fileView = useMemo(
+    () =>
+      resolveFileView({
+        activeTab,
+        localEnv,
+        localRoot: localExplorerRoot,
+        hosts: Object.values(remoteHosts),
+        workspaceRoots: remoteWorkspaceRoots,
+        lastRemoteCwd: remoteLastCwd,
+      }),
+    [
+      activeTab,
+      localEnv,
+      localExplorerRoot,
+      remoteHosts,
+      remoteWorkspaceRoots,
+      remoteLastCwd,
+    ],
   );
+  const explorerRoot = fileView.root;
+  // The store's env is what the Explorer, search and git read. Remote only
+  // while a remote host is in view; `localEnv` is kept for local-only work.
+  useLayoutEffect(() => {
+    const store = useWorkspaceEnvStore.getState();
+    const next = fileView.remote ? fileView.env : store.localEnv;
+    if (workspaceScopeKey(next) !== workspaceScopeKey(store.env) ||
+      (next.kind === "ssh" && store.env.kind === "ssh" && next.conn !== store.env.conn)) {
+      useWorkspaceEnvStore.setState({ env: next });
+    }
+  }, [fileView]);
+  // A host tab is active but its file connection is not open yet: open it on
+  // the shared transport (no second password prompt).
+  const activeRemoteHostId = fileView.remote
+    ? (fileView.env as { profileId: string }).profileId
+    : null;
+  useEffect(() => {
+    if (activeRemoteHostId) {
+      void useRemoteHostsStore.getState().ensure(activeRemoteHostId);
+    }
+  }, [activeRemoteHostId]);
+  // ---- end fork-only ------------------------------------------------------
 
   useWindowTitle(activeTab, explorerRoot);
 
@@ -630,9 +698,21 @@ export default function App() {
   });
   const askPresence = usePresence(Boolean(askPopup), 120);
 
+  // Fork-only (SSH port): file search lives in the Explorer, so reach it from
+  // any sidebar view (the Remotes view in particular) by switching first.
+  const focusExplorerSearch = useCallback(() => {
+    if (sidebarView !== "explorer" || sidebarCollapsed) {
+      openSidebarView("explorer");
+      setTimeout(() => explorerRef.current?.focusSearch(), 50);
+      return;
+    }
+    explorerRef.current?.focusSearch();
+  }, [sidebarView, sidebarCollapsed, openSidebarView]);
+
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
   }, [newTab, inheritedCwdForNewTab]);
+  openNewTabRef.current = openNewTab;
 
   const openNewPrivateTab = useCallback(() => {
     newPrivateTab(inheritedCwdForNewTab());
@@ -709,11 +789,15 @@ export default function App() {
 
   const handleOpenFile = useCallback(
     (path: string, pin?: boolean) => {
+      // Fork-only (SSH port): a file picked from the Explorer or search while
+      // they show a remote host lives on that host; the tab remembers it.
+      const env = useWorkspaceEnvStore.getState().env;
+      const workspace = env.kind === "ssh" ? env : undefined;
       // Markdown opens in its rendered view by default; a per-tab toggle flips
       // it to the raw editor. Other files default to preview (pin=false);
       // explicit actions like context-menu "Open" pass pin=true to persist.
-      if (isMarkdownPath(path)) newMarkdownTab(path);
-      else openFileTab(path, pin ?? false);
+      if (isMarkdownPath(path)) newMarkdownTab(path, workspace);
+      else openFileTab(path, pin ?? false, { workspace });
     },
     [openFileTab, newMarkdownTab],
   );
@@ -731,8 +815,8 @@ export default function App() {
   const connectToRemote = useCallback(
     (profile: RemoteProfile) => {
       newRemoteTab(profile.id, profile.name.trim() || profile.host);
-      // The file browser rides its own SFTP connection; opening a terminal is
-      // what arms it, so the sidebar shows the host's files.
+      // The Explorer and the Remotes-view tree use the host's shared file
+      // connection, which rides the terminal's authenticated transport.
       void useRemoteBrowserStore.getState().open(profile);
     },
     [newRemoteTab],
@@ -752,63 +836,51 @@ export default function App() {
           }
           return;
         }
-        await handleWorkspaceChange({
-          kind: "ssh",
-          conn: opened.conn,
-          profileId: opened.profileId,
-        });
+        // The Explorer follows the active host tab, so "Open as workspace"
+        // means: root that host's views here, and bring one of its tabs (or
+        // a new one) to the front. Local tabs are left alone.
+        const hostTab = tabsRef.current.find(
+          (t) => t.kind === "terminal" && t.remoteId === profile.id,
+        );
+        if (hostTab) setActiveId(hostTab.id);
+        else newRemoteTab(profile.id, profile.name.trim() || profile.host);
+        openSidebarView("explorer");
       })();
     },
-    [handleWorkspaceChange],
+    [newRemoteTab, setActiveId, openSidebarView],
   );
 
   /**
-   * Editors read and write through the active workspace, so a remote file can
-   * only be edited once the workspace points at its host. Opening one adopts
-   * that workspace (without resetting tabs) rather than failing quietly.
+   * Fork-only (SSH port): a remote file opens in a tab that carries its host,
+   * so it is read and saved on that host no matter what else is active.
    */
   const openRemoteFile = useCallback(
-    (path: string) => {
+    (path: string, profileId?: string) => {
       void (async () => {
-        const browser = useRemoteBrowserStore.getState();
-        const profile = browser.profileId
-          ? useRemotesStore
-              .getState()
-              .profiles.find((p) => p.id === browser.profileId)
-          : undefined;
-        if (!profile) return;
-
-        const active = useRemoteWorkspaceStore.getState().active;
-        if (active?.profileId !== profile.id) {
-          const opened = await useRemoteWorkspaceStore
-            .getState()
-            .open(profile);
-          if (!opened) {
-            toast.error(`Could not open ${profile.name || profile.host}`, {
-              description:
-                useRemoteWorkspaceStore.getState().error ?? undefined,
-            });
-            return;
-          }
-          await adoptWorkspaceEnv({
-            kind: "ssh",
-            conn: opened.conn,
-            profileId: opened.profileId,
+        const id = profileId ?? useRemoteBrowserStore.getState().profileId;
+        if (!id) return;
+        const host = await useRemoteHostsStore.getState().ensure(id);
+        if (!host) {
+          toast.error("Could not open the remote file", {
+            description: useRemoteHostsStore.getState().errors[id],
           });
+          return;
         }
-
         // Saving is confined to the roots the connection has been given.
-        const conn = useRemoteWorkspaceStore.getState().active?.conn;
         const dir = path.slice(0, path.lastIndexOf("/")) || "/";
-        if (conn != null) {
-          await invoke("remote_authorize", { conn, path: dir }).catch(
-            () => undefined,
-          );
-        }
-        handleOpenFile(path, true);
+        await invoke("remote_authorize", { conn: host.conn, path: dir }).catch(
+          () => undefined,
+        );
+        const workspace = {
+          kind: "ssh" as const,
+          conn: host.conn,
+          profileId: id,
+        };
+        if (isMarkdownPath(path)) newMarkdownTab(path, workspace);
+        else openFileTab(path, true, { workspace });
       })();
     },
-    [adoptWorkspaceEnv, handleOpenFile],
+    [openFileTab, newMarkdownTab],
   );
 
   const runInActiveTerminal = useCallback(
@@ -1101,6 +1173,11 @@ export default function App() {
       "settings.open": () => void openSettingsWindow(),
       "sidebar.toggle": toggleSidebar,
       "explorer.focus": toggleExplorerFocus,
+      // Fork-only (SSH port): file search from any sidebar view. While the
+      // Explorer is mounted its own handler wins (it registers too).
+      ...(sidebarView !== "explorer" || sidebarCollapsed
+        ? { "explorer.search": focusExplorerSearch }
+        : {}),
       "explorer.toggleHidden": toggleHiddenFiles,
       "view.zoomIn": zoomIn,
       "view.zoomOut": zoomOut,
@@ -1143,6 +1220,9 @@ export default function App() {
       zoomOut,
       zoomReset,
       activateAgentTarget,
+      sidebarView,
+      sidebarCollapsed,
+      focusExplorerSearch,
     ],
   );
 
@@ -1247,11 +1327,17 @@ export default function App() {
       setLeafCwd(leafId, cwd);
       // Fork-only (SSH port): a remote pane reports a path on another machine;
       // authorizing it locally could open up an unrelated local directory.
-      const remote = tabsRef.current.some(
+      const remoteTab = tabsRef.current.find(
         (t) =>
           t.kind === "terminal" && !!t.remoteId && hasLeaf(t.paneTree, leafId),
       );
-      if (remote) return;
+      if (remoteTab?.kind === "terminal" && remoteTab.remoteId) {
+        // Remembered per host so a remote editor tab still roots the
+        // Explorer where that host's terminal last was. Never authorized
+        // locally: it is a path on another machine.
+        useRemoteHostsStore.getState().noteCwd(remoteTab.remoteId, cwd);
+        return;
+      }
       if (cwd && !authorizedCwds.current.has(cwd)) {
         authorizedCwds.current.add(cwd);
         native.workspaceAuthorize(cwd).catch(() => {
@@ -1434,7 +1520,7 @@ export default function App() {
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
             splitPaneDown: () => splitActivePaneInActiveTab("col"),
             focusSearch: () => searchInlineRef.current?.focus(),
-            focusExplorerSearch: () => explorerRef.current?.focusSearch(),
+            focusExplorerSearch: focusExplorerSearch,
             toggleSidebar,
             toggleHiddenFiles,
             toggleAi: togglePanelAndFocus,
@@ -1475,6 +1561,7 @@ export default function App() {
       remoteCommandTargets,
       connectRemoteById,
       openSidebarView,
+      focusExplorerSearch,
     ],
   );
 
@@ -1483,7 +1570,11 @@ export default function App() {
   >(new Map());
   const openContentHit = useCallback(
     (path: string, line: number) => {
-      const id = openFileTab(path, true);
+      // Fork-only (SSH port): content search runs on the host in view.
+      const env = useWorkspaceEnvStore.getState().env;
+      const id = openFileTab(path, true, {
+        workspace: env.kind === "ssh" ? env : undefined,
+      });
       if (id == null) return;
       const h = editorRefs.current.get(id);
       if (h) h.gotoLine(line);
