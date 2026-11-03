@@ -81,10 +81,29 @@ interface HookOptions {
   autoCheck?: boolean;
 }
 
+/**
+ * Fork-only: this personal build never self-updates. An upstream release is
+ * signed with upstream's key and would replace the fork (and its SSH support)
+ * on install. tauri.conf.json also ships no updater endpoints and no updater
+ * artifacts, so even a direct `check()` has nothing to reach. To re-enable,
+ * set this to true and restore `plugins.updater.endpoints`.
+ */
+export const UPDATER_ENABLED = false;
+
 export function useUpdater({ autoCheck = true }: HookOptions = {}) {
   const [status, setStatus] = useState<UpdaterStatus>({ kind: "idle" });
 
   const runCheck = useCallback(async ({ manual }: Options = {}) => {
+    if (!UPDATER_ENABLED) {
+      // Only an explicit click reports anything, so the About page shows why.
+      if (manual) {
+        setStatus({
+          kind: "error",
+          message: "Updates are disabled in this fork build",
+        });
+      }
+      return;
+    }
     if (!manual) {
       const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0);
       if (Date.now() - last < CHECK_INTERVAL_MS) return;
