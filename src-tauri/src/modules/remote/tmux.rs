@@ -194,8 +194,27 @@ pub async fn kill(conn: &RemoteConn, id: &str) -> Result<(), String> {
 
 /// Detach every client attached to the session. The attached Terax tab's
 /// tmux client exits, which ends that tab's channel.
+///
+/// tmux exits 1 with "no current client" when nothing is attached (the
+/// listing was stale, or the client already went away). The goal, "nothing
+/// attached", already holds, so that is success; the caller refreshes.
 pub async fn detach(conn: &RemoteConn, id: &str) -> Result<(), String> {
-    run(conn, &format!("tmux detach-client -s {}", target(id)?)).await
+    let out = conn
+        .exec(&format!("tmux detach-client -s {}", target(id)?))
+        .await?;
+    detach_outcome(out.code, &out.stderr_text())
+}
+
+pub(crate) fn detach_outcome(code: i32, stderr: &str) -> Result<(), String> {
+    if code == 0 || stderr.contains("no current client") {
+        return Ok(());
+    }
+    let msg = stderr.trim();
+    Err(if msg.is_empty() {
+        format!("tmux exited with {code}")
+    } else {
+        msg.to_owned()
+    })
 }
 
 #[cfg(test)]
@@ -286,6 +305,17 @@ mod tests {
         assert!(attach_command("$3; rm -rf ~").is_err());
         assert!(attach_command("work").is_err());
         assert!(target("$1'").is_err());
+    }
+
+    #[test]
+    fn detach_without_a_client_is_success() {
+        assert!(detach_outcome(0, "").is_ok());
+        assert!(detach_outcome(1, "no current client\n").is_ok());
+        assert_eq!(
+            detach_outcome(1, "can't find session: $9\n").unwrap_err(),
+            "can't find session: $9"
+        );
+        assert!(detach_outcome(1, "").unwrap_err().contains("exited with 1"));
     }
 
     #[test]

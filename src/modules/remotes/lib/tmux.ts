@@ -72,6 +72,15 @@ async function connFor(profileId: string): Promise<number> {
   return host.conn;
 }
 
+/**
+ * Latest refresh request per host. Refreshes overlap (an action's own
+ * refresh, a session tab exiting, the refresh button), and their tmux
+ * execs can answer out of order: a listing taken before a detach that
+ * arrives after the one taken after it would put "attached" back on screen.
+ * Only the newest request may write.
+ */
+const refreshSeq = new Map<string, number>();
+
 export const usePersistentSessions = create<State>((set, get) => {
   const patch = (profileId: string, p: Partial<HostSessions>) =>
     set((s) => ({
@@ -93,10 +102,14 @@ export const usePersistentSessions = create<State>((set, get) => {
     byHost: {},
 
     refresh: async (profileId) => {
+      const seq = (refreshSeq.get(profileId) ?? 0) + 1;
+      refreshSeq.set(profileId, seq);
+      const latest = () => refreshSeq.get(profileId) === seq;
       patch(profileId, { loading: true, error: null });
       try {
         const conn = await connFor(profileId);
         const listing = await invoke<Listing>("tmux_list", { conn });
+        if (!latest()) return;
         if (listing.status === "notInstalled") {
           patch(profileId, {
             loading: false,
@@ -111,7 +124,7 @@ export const usePersistentSessions = create<State>((set, get) => {
           });
         }
       } catch (e) {
-        patch(profileId, { loading: false, error: String(e) });
+        if (latest()) patch(profileId, { loading: false, error: String(e) });
       }
     },
 

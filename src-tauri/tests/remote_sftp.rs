@@ -812,8 +812,16 @@ live!(one_connection_serves_shell_and_sftp_with_one_auth, c, e, {
 // Needs tmux on the test server. Uses a private tmux socket (TMUX_TMPDIR)
 // so it cannot touch real sessions, by prefixing every command; the module
 // itself is exercised through the same functions the app calls.
+/// The tmux tests share one tmux server on the test host (and one kills it
+/// to check the no-server case), so they run one at a time.
+fn tmux_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 live!(tmux_persistent_sessions_round_trip, c, e, {
     use terax_lib::modules::remote::tmux::{self, TmuxListing};
+    let _serial = tmux_lock().lock().await;
 
     let probe = c.exec("command -v tmux").await.expect("probe");
     if !probe.ok() {
@@ -932,4 +940,84 @@ live!(tmux_not_installed_is_reported_not_an_error, c, _e, {
         tmux::list(&c).await.unwrap(),
         TmuxListing::Ok { .. } | TmuxListing::NotInstalled
     ));
+});
+
+// Fork-only: the reported "Detach, then refresh shows it attached again"
+// flow, plus detaching a session nobody is attached to.
+live!(tmux_detach_then_refresh_reports_detached, c, e, {
+    use terax_lib::modules::remote::tmux::{self, TmuxListing};
+    let _serial = tmux_lock().lock().await;
+
+    if !c.exec("command -v tmux").await.expect("probe").ok() {
+        eprintln!("skipping: tmux is not installed on the test server");
+        return;
+    }
+    let attached_of = |listing: TmuxListing, id: &str| match listing {
+        TmuxListing::Ok { sessions } => sessions
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.attached)
+            .expect("session listed"),
+        TmuxListing::NotInstalled => panic!("tmux present"),
+    };
+
+    let id = tmux::create(&c, "detach-check").await.expect("create");
+
+    // No client attached: tmux itself says "no current client" (exit 1);
+    // that must be success, not an error toast.
+    tmux::detach(&c, &id)
+        .await
+        .expect("detach with no client is ok");
+    assert_eq!(attached_of(tmux::list(&c).await.unwrap(), &id), 0);
+
+    // Attach exactly as a Terax tab does (PTY channel exec over the shared
+    // connection), detach, then list again as the refresh button does.
+    let target = target_for(&e);
+    let bus = Arc::new(PromptBus::new(Channel::new(|_| Ok(()))));
+    let lease = terax_lib::modules::ssh::pool::acquire(&target, &bus)
+        .await
+        .expect("lease");
+    let mut ch = lease
+        .handle()
+        .channel_open_session()
+        .await
+        .expect("channel");
+    ch.request_pty(false, "xterm", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+    ch.exec(true, tmux::attach_command(&id).unwrap().as_bytes())
+        .await
+        .expect("attach");
+    let mut attached = 0;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        attached = attached_of(tmux::list(&c).await.unwrap(), &id);
+        if attached > 0 {
+            break;
+        }
+    }
+    assert_eq!(attached, 1);
+
+    tmux::detach(&c, &id).await.expect("detach");
+    // The tab's channel ends (so the app closes the tab)...
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(msg) = ch.wait().await {
+            if matches!(msg, russh::ChannelMsg::Close | russh::ChannelMsg::Eof) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the attached channel ends on detach");
+    // ...and an immediate refresh, and a later one, report it detached.
+    assert_eq!(attached_of(tmux::list(&c).await.unwrap(), &id), 0);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(attached_of(tmux::list(&c).await.unwrap(), &id), 0);
+
+    tmux::kill(&c, &id).await.expect("kill a detached session");
+    match tmux::list(&c).await.unwrap() {
+        TmuxListing::Ok { sessions } => assert!(sessions.iter().all(|s| s.id != id)),
+        TmuxListing::NotInstalled => unreachable!(),
+    }
+    drop(lease);
 });
