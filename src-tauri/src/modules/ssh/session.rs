@@ -526,6 +526,10 @@ pub struct SpawnArgs {
     /// Created by the caller so prompts emitted during the handshake are
     /// answerable before this function returns.
     pub bus: Arc<PromptBus>,
+    /// Fork-only (SSH port): attach to this tmux session (by `$id`) instead
+    /// of starting a login shell. Validated and turned into a command here,
+    /// never taken as a command string from the frontend.
+    pub tmux_session: Option<String>,
 }
 
 /// Connect, verify the host key, and authenticate.
@@ -707,7 +711,12 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
         on_data,
         on_exit,
         bus,
+        tmux_session,
     } = args;
+    let attach = match tmux_session.as_deref() {
+        Some(id) => Some(crate::modules::remote::tmux::attach_command(id)?),
+        None => None,
+    };
 
     // Fork-only (SSH port): lease the host's shared connection, so a second
     // tab, the file browser and a remote workspace do not authenticate again.
@@ -735,10 +744,16 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
         )
         .await
         .map_err(|e| format!("could not request a remote pty: {e}"))?;
-    channel
-        .request_shell(true)
-        .await
-        .map_err(|e| format!("could not start the remote shell: {e}"))?;
+    match &attach {
+        Some(command) => channel
+            .exec(true, command.as_bytes())
+            .await
+            .map_err(|e| format!("could not attach to the tmux session: {e}"))?,
+        None => channel
+            .request_shell(true)
+            .await
+            .map_err(|e| format!("could not start the remote shell: {e}"))?,
+    }
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let exit_code = Arc::new(Mutex::new(0));
@@ -748,7 +763,12 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
         exited: AtomicBool::new(false),
     });
 
-    if let Some(line) = target::startup_command(target.cwd.as_deref(), target.command.as_deref()) {
+    let startup = if attach.is_some() {
+        None
+    } else {
+        target::startup_command(target.cwd.as_deref(), target.command.as_deref())
+    };
+    if let Some(line) = startup {
         let _ = cmd_tx.send(SessionCmd::Data(line.into_bytes()));
     }
 

@@ -27,6 +27,10 @@ type Props = {
   blocks: boolean;
   /** Fork-only (SSH port): set when every pane in this tab is an SSH session. */
   remoteId?: string;
+  /** Fork-only (SSH port): tmux session the tab attaches to. */
+  tmuxSession?: string;
+  /** Only this leaf attaches; other splits of the tab are plain shells. */
+  tmuxLeafId?: number;
   onFocusLeaf: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
@@ -34,8 +38,16 @@ type Props = {
 export function PaneTreeView(props: Props) {
   const { node } = props;
   if (node.kind === "leaf") {
-    const { tabVisible, activeLeafId, blocks, remoteId, onFocusLeaf, getBundle } =
-      props;
+    const {
+      tabVisible,
+      activeLeafId,
+      blocks,
+      remoteId,
+      tmuxSession,
+      tmuxLeafId,
+      onFocusLeaf,
+      getBundle,
+    } = props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
     return (
@@ -58,6 +70,7 @@ export function PaneTreeView(props: Props) {
           initialCwd={node.cwd}
           blocks={blocks}
           remoteId={remoteId}
+          tmuxSession={node.id === tmuxLeafId ? tmuxSession : undefined}
           ref={b.setRef}
           onSearchReady={b.onSearchReady}
           onCwd={b.onCwd}

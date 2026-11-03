@@ -107,6 +107,8 @@ export function TerminalStack({
               activeLeafId={t.activeLeafId}
               blocks={t.blocks ?? false}
               remoteId={t.remoteId}
+              tmuxSession={t.tmuxSession}
+              tmuxLeafId={t.tmuxLeafId}
               onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
               getBundle={getBundle}
             />

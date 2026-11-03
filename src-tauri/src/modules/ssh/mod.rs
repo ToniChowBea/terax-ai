@@ -74,6 +74,7 @@ pub async fn ssh_open(
     on_data: Channel<Response>,
     on_event: Channel<SshEvent>,
     on_exit: Channel<i32>,
+    tmux_session: Option<String>,
 ) -> Result<u32, String> {
     // Register the bus before the handshake so `ssh_prompt_respond` can find it
     // while `spawn` is still awaiting an answer.
@@ -87,6 +88,7 @@ pub async fn ssh_open(
         on_data,
         on_exit,
         bus,
+        tmux_session,
     })
     .await;
 

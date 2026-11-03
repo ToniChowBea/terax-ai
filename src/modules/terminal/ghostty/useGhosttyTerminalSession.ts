@@ -65,6 +65,8 @@ type GhosttySession = {
   readonly backend: GhosttyBackend;
   /** Fork-only (SSH port): remote profile id when this leaf is an SSH session. */
   readonly remoteId?: string;
+  /** Fork-only (SSH port): tmux session id this leaf attaches to. */
+  readonly tmuxSession?: string;
   /** Fork-only (SSH port): OSC 133 says a command is running (remote close guard). */
   commandRunning?: boolean;
   initialCwd: string | undefined;
@@ -117,6 +119,8 @@ type Options = {
   blocks?: boolean;
   /** Fork-only (SSH port): remote profile id when this leaf is an SSH session. */
   remoteId?: string;
+  /** Fork-only (SSH port): attach this leaf to a tmux session on the host. */
+  tmuxSession?: string;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
   onSearchReady?: (search: TerminalSearchController) => void;
@@ -131,6 +135,7 @@ export function useGhosttyTerminalSession({
   initialCwd,
   blocks = false,
   remoteId,
+  tmuxSession,
   onSearchReady,
   onExit,
   onCwd,
@@ -165,6 +170,7 @@ export function useGhosttyTerminalSession({
       initialCwdRef.current,
       fontRef.current,
       remoteId,
+      tmuxSession,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -190,7 +196,7 @@ export function useGhosttyTerminalSession({
         session.callbacks = {};
       }
     };
-  }, [leafId, backend, container, blocks, remoteId]);
+  }, [leafId, backend, container, blocks, remoteId, tmuxSession]);
 
   useEffect(() => {
     const session = sessions.get(leafId);
@@ -533,6 +539,7 @@ function ensureSession(
   initialCwd?: string,
   font?: TerminalFontSpec,
   remoteId?: string,
+  tmuxSession?: string,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -553,6 +560,7 @@ function ensureSession(
     leafId,
     backend,
     remoteId,
+    tmuxSession,
     initialCwd,
     lastCwd: null,
     model: null,
@@ -835,7 +843,13 @@ async function initializeSessionGeneration(
   // Fork-only (SSH port): a remote leaf is driven by an SSH channel shaped
   // like a PTY session; everything below treats both the same.
   const pty = session.remoteId
-    ? await openRemoteSession(session.remoteId, startCols, startRows, ptyHandlers)
+    ? await openRemoteSession(
+        session.remoteId,
+        startCols,
+        startRows,
+        ptyHandlers,
+        { tmuxSession: session.tmuxSession },
+      )
     : await openPty(
         startCols,
         startRows,

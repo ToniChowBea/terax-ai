@@ -65,6 +65,7 @@ import {
   type RemoteProfile,
   RemotesPanel,
   resolveFileView,
+  usePersistentSessions,
   useBrowserTracksTabs,
   useRemoteBrowserStore,
   useRemoteHostsStore,
@@ -904,6 +905,53 @@ export default function App() {
     [remoteProfiles],
   );
 
+  // Fork-only (SSH port): persistent sessions (tmux). One Terax tab per
+  // session: attaching focuses the tab that already has it.
+  const tmuxTabs = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const t of tabs) {
+      if (t.kind !== "terminal" || !t.remoteId || !t.tmuxSession) continue;
+      const set = map.get(t.remoteId) ?? new Set<string>();
+      set.add(t.tmuxSession);
+      map.set(t.remoteId, set);
+    }
+    return map;
+  }, [tabs]);
+
+  const attachPersistentSession = useCallback(
+    (profileId: string, id: string, name: string) => {
+      const existing = tabsRef.current.find(
+        (t) =>
+          t.kind === "terminal" &&
+          t.remoteId === profileId &&
+          t.tmuxSession === id,
+      );
+      if (existing) {
+        if (existing.spaceId !== activeSpaceIdRef.current) {
+          useSpaces.getState().setActive(existing.spaceId);
+        }
+        setActiveId(existing.id);
+        return;
+      }
+      // Labelled with the session name; the tab title is display only.
+      newRemoteTab(profileId, name || id, id);
+    },
+    [newRemoteTab, setActiveId],
+  );
+
+  /** Detach the active tab from its persistent session; the session lives on. */
+  const detachActiveSession = useCallback(() => {
+    if (activeTab?.kind !== "terminal") return;
+    const { remoteId, tmuxSession } = activeTab;
+    if (!remoteId || !tmuxSession) return;
+    void usePersistentSessions
+      .getState()
+      .detach(remoteId, tmuxSession)
+      .catch((e) =>
+        toast.error("Could not detach", { description: String(e) }),
+      );
+  }, [activeTab]);
+
   const connectRemoteById = useCallback(
     (id: string) => {
       const profile = remoteProfiles.find((p) => p.id === id);
@@ -1367,6 +1415,11 @@ export default function App() {
         (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
       );
       if (!tab || tab.kind !== "terminal") return;
+      // Fork-only (SSH port): a persistent session tab ended (detached or
+      // killed); the sessions list changed with it.
+      if (tab.remoteId && tab.tmuxSession) {
+        void usePersistentSessions.getState().refresh(tab.remoteId);
+      }
       // Last pane of the last tab: quit instead of respawning a shell.
       if (leafIds(tab.paneTree).length === 1 && all.length === 1) {
         void getCurrentWindow().close();
@@ -1535,6 +1588,10 @@ export default function App() {
             remotes: remoteCommandTargets,
             connectRemote: connectRemoteById,
             openRemotes: () => openSidebarView("remotes"),
+            detachSession:
+              activeTab?.kind === "terminal" && activeTab.tmuxSession
+                ? detachActiveSession
+                : undefined,
           })
         : [],
     [
@@ -1562,6 +1619,8 @@ export default function App() {
       connectRemoteById,
       openSidebarView,
       focusExplorerSearch,
+      activeTab,
+      detachActiveSession,
     ],
   );
 
@@ -1756,6 +1815,8 @@ export default function App() {
                           activeWorkspaceConn={
                             activeRemoteWorkspace?.conn ?? null
                           }
+                          tmuxTabs={tmuxTabs}
+                          onAttachSession={attachPersistentSession}
                         />
                       ) : sidebarView === "explorer" ? (
                         <FileExplorer

@@ -11,6 +11,8 @@ pub mod forward;
 pub mod fs;
 pub mod hooks;
 pub mod path;
+// Fork-only (SSH port): persistent sessions (tmux).
+pub mod tmux;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -232,6 +234,53 @@ pub async fn tunnel_close_all(
     tunnels: tauri::State<'_, forward::TunnelState>,
 ) -> Result<usize, String> {
     Ok(tunnels.close_all().await)
+}
+
+// ---- Fork-only (SSH port): persistent sessions (tmux) -----------------------
+
+#[tauri::command]
+pub async fn tmux_list(
+    state: tauri::State<'_, Arc<RemoteState>>,
+    conn: u32,
+) -> Result<tmux::TmuxListing, String> {
+    tmux::list(&*state.require(conn)?).await
+}
+
+#[tauri::command]
+pub async fn tmux_create(
+    state: tauri::State<'_, Arc<RemoteState>>,
+    conn: u32,
+    name: String,
+) -> Result<String, String> {
+    tmux::create(&*state.require(conn)?, &name).await
+}
+
+#[tauri::command]
+pub async fn tmux_rename(
+    state: tauri::State<'_, Arc<RemoteState>>,
+    conn: u32,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    tmux::rename(&*state.require(conn)?, &id, &name).await
+}
+
+#[tauri::command]
+pub async fn tmux_kill(
+    state: tauri::State<'_, Arc<RemoteState>>,
+    conn: u32,
+    id: String,
+) -> Result<(), String> {
+    tmux::kill(&*state.require(conn)?, &id).await
+}
+
+#[tauri::command]
+pub async fn tmux_detach(
+    state: tauri::State<'_, Arc<RemoteState>>,
+    conn: u32,
+    id: String,
+) -> Result<(), String> {
+    tmux::detach(&*state.require(conn)?, &id).await
 }
 
 /// Register a directory as an open remote workspace root and hand back its

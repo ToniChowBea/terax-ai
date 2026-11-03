@@ -41,6 +41,7 @@ import {
 } from "react";
 import { GroupDialog } from "./GroupDialog";
 import { HostDialog } from "./HostDialog";
+import { PersistentSessions } from "./PersistentSessions";
 import { RemoteFiles } from "./RemoteFiles";
 import { RemoteGit } from "./RemoteGit";
 import { useFollowTerminal, useRemoteBrowserStore } from "./lib/browser";
@@ -74,6 +75,10 @@ type Props = {
   /** Profile the active terminal is connected to, and where it is standing. */
   activeTerminalRemoteId?: string;
   activeTerminalCwd?: string;
+  /** Fork-only (SSH port): tmux session ids that have a tab, by host. */
+  tmuxTabs?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Focus the tab attached to a persistent session, or open one. */
+  onAttachSession?: (profileId: string, id: string, name: string) => void;
 };
 
 export function RemotesPanel({
@@ -85,7 +90,10 @@ export function RemotesPanel({
   onOpenFile,
   activeTerminalRemoteId,
   activeTerminalCwd,
+  tmuxTabs,
+  onAttachSession,
 }: Props) {
+  const sessionsExpanded = useRemoteSections((s) => s.sessionsExpanded);
   const browserConn = useRemoteBrowserStore((s) => s.conn);
   const browserProfileId = useRemoteBrowserStore((s) => s.profileId);
   const browserConnecting = useRemoteBrowserStore((s) => s.connecting);
@@ -293,6 +301,29 @@ export function RemotesPanel({
                     </Section>
                   ),
                 },
+                ...(browserProfileId && onAttachSession
+                  ? [
+                      {
+                        id: "remotes-sessions",
+                        expanded: sessionsExpanded,
+                        node: (
+                          <Section
+                            title="Persistent sessions"
+                            expanded={sessionsExpanded}
+                            onToggle={() => toggleSection("sessions")}
+                          >
+                            <PersistentSessions
+                              profileId={browserProfileId}
+                              attachedTabs={
+                                tmuxTabs?.get(browserProfileId) ?? new Set()
+                              }
+                              onAttach={onAttachSession}
+                            />
+                          </Section>
+                        ),
+                      },
+                    ]
+                  : []),
                 {
                   id: "remotes-git",
                   expanded: gitExpanded,

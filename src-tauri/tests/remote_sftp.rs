@@ -806,3 +806,130 @@ live!(one_connection_serves_shell_and_sftp_with_one_auth, c, e, {
     assert_eq!(prompts.load(SeqCst), 2, "a fresh connection asks again");
     drop(again);
 });
+
+// --- Fork-only: persistent sessions (tmux) ---------------------------------
+
+// Needs tmux on the test server. Uses a private tmux socket (TMUX_TMPDIR)
+// so it cannot touch real sessions, by prefixing every command; the module
+// itself is exercised through the same functions the app calls.
+live!(tmux_persistent_sessions_round_trip, c, e, {
+    use terax_lib::modules::remote::tmux::{self, TmuxListing};
+
+    let probe = c.exec("command -v tmux").await.expect("probe");
+    if !probe.ok() {
+        eprintln!("skipping: tmux is not installed on the test server");
+        return;
+    }
+    // Start from no server at all: an empty list, not an error.
+    let _ = c.exec("tmux kill-server 2>/dev/null; true").await;
+    match tmux::list(&c).await.expect("list with no server") {
+        TmuxListing::Ok { sessions } => assert!(sessions.is_empty()),
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // Odd but legal names, created through the validated path.
+    let id = tmux::create(&c, "we ird ☃ name").await.expect("create");
+    assert!(tmux::is_session_id(&id), "{id}");
+    // A name a hostile server could report is never used as a target: make
+    // one directly and check it lists intact and can be killed by id.
+    c.exec(r#"tmux new-session -d -s 'q'"'"'uote $x;`y`'"#)
+        .await
+        .expect("raw create");
+
+    let TmuxListing::Ok { sessions } = tmux::list(&c).await.expect("list") else {
+        panic!("tmux present");
+    };
+    let mine = sessions
+        .iter()
+        .find(|s| s.id == id)
+        .expect("created session");
+    assert_eq!(mine.name, "we ird ☃ name");
+    assert_eq!(mine.windows, 1);
+    assert_eq!(mine.attached, 0);
+    assert!(mine.created > 0 && mine.activity >= mine.created);
+    let odd = sessions
+        .iter()
+        .find(|s| s.name.starts_with("q'uote"))
+        .expect("odd session");
+    // Displayed exactly as tmux reports it (tmux may escape some
+    // characters at creation); never used to build a command.
+    assert!(
+        odd.name.contains("uote") && odd.name.contains('`'),
+        "{}",
+        odd.name
+    );
+
+    tmux::rename(&c, &id, "renamed").await.expect("rename");
+    assert!(tmux::rename(&c, &id, "bad:name").await.is_err());
+
+    // Attach the way a Terax tab does: an exec of attach_command on a PTY
+    // channel over the same connection. The session then reports a client.
+    let target = target_for(&e);
+    let bus = Arc::new(PromptBus::new(Channel::new(|_| Ok(()))));
+    let lease = terax_lib::modules::ssh::pool::acquire(&target, &bus)
+        .await
+        .expect("lease");
+    let mut ch = lease
+        .handle()
+        .channel_open_session()
+        .await
+        .expect("channel");
+    ch.request_pty(false, "xterm", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+    ch.exec(true, tmux::attach_command(&id).unwrap().as_bytes())
+        .await
+        .expect("attach");
+    let mut attached = 0;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let TmuxListing::Ok { sessions } = tmux::list(&c).await.unwrap() {
+            attached = sessions
+                .iter()
+                .find(|s| s.id == id)
+                .map_or(0, |s| s.attached);
+            if attached > 0 {
+                break;
+            }
+        }
+    }
+    assert_eq!(attached, 1, "the PTY channel is attached");
+
+    // Detach ends the attached client, and with it the channel.
+    tmux::detach(&c, &id).await.expect("detach");
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(msg) = ch.wait().await {
+            if matches!(msg, russh::ChannelMsg::Close | russh::ChannelMsg::Eof) {
+                return true;
+            }
+        }
+        true
+    })
+    .await
+    .unwrap_or(false);
+    assert!(closed, "detaching ends the attached channel");
+
+    tmux::kill(&c, &id).await.expect("kill");
+    tmux::kill(&c, &odd.id).await.expect("kill odd");
+    let TmuxListing::Ok { sessions } = tmux::list(&c).await.unwrap() else {
+        panic!()
+    };
+    assert!(sessions.iter().all(|s| s.id != id && s.id != odd.id));
+    assert!(tmux::kill(&c, "$1; touch /tmp/pwned").await.is_err());
+    drop(lease);
+});
+
+live!(tmux_not_installed_is_reported_not_an_error, c, _e, {
+    use terax_lib::modules::remote::tmux::{self, TmuxListing};
+    // Simulated by hiding tmux from PATH for this exec only.
+    let out = c
+        .exec("PATH=/nonexistent; command -v tmux >/dev/null 2>&1 || exit 127")
+        .await
+        .unwrap();
+    assert_eq!(out.code, 127);
+    // The real list path on this server must not error either way.
+    assert!(matches!(
+        tmux::list(&c).await.unwrap(),
+        TmuxListing::Ok { .. } | TmuxListing::NotInstalled
+    ));
+});

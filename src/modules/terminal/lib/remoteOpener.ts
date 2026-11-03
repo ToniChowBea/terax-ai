@@ -16,7 +16,14 @@ export type RemoteOpener = (
     onData: (bytes: Uint8Array) => void;
     onExit: (code: number) => void;
   },
+  /** Opaque per-tab options the remotes module understands (tmux attach). */
+  options?: RemoteOpenOptions,
 ) => Promise<PtySession>;
+
+export type RemoteOpenOptions = {
+  /** tmux session id (`$n`) to attach to instead of a login shell. */
+  tmuxSession?: string;
+};
 
 let remoteOpener: RemoteOpener | null = null;
 
@@ -29,9 +36,10 @@ export function openRemoteSession(
   cols: number,
   rows: number,
   handlers: Parameters<RemoteOpener>[3],
+  options?: RemoteOpenOptions,
 ): Promise<PtySession> {
   if (!remoteOpener) {
     return Promise.reject(new Error("remote sessions are not available"));
   }
-  return remoteOpener(remoteId, cols, rows, handlers);
+  return remoteOpener(remoteId, cols, rows, handlers, options);
 }

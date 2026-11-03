@@ -119,7 +119,8 @@ function status(
  * the terminal only ever sees a `PtySession`.
  */
 export function installRemoteOpener(): void {
-  registerRemoteOpener(async (remoteId, cols, rows, handlers) => {
+  registerRemoteOpener(async (remoteId, cols, rows, handlers, options) => {
+    const tmuxSession = options?.tmuxSession;
     const profile = findProfile(remoteId);
     if (!profile) throw new Error("that remote host no longer exists");
 
@@ -179,9 +180,12 @@ export function installRemoteOpener(): void {
     // Only an interactive shell has a prompt to hook. A profile that runs a
     // command instead gets the line typed into that program's stdin, which is
     // at best noise and at worst leaves it waiting on input that never comes.
+    // A tmux attach is not a prompt either: typing the hook would land in
+    // whatever runs in the session.
     const integrate =
       usePreferencesStore.getState().remoteFollowTerminal &&
-      !profile.command?.trim();
+      !profile.command?.trim() &&
+      !tmuxSession;
     const suppress = integrate
       ? createEchoSuppressor(SHELL_INTEGRATION)
       : null;
@@ -220,6 +224,7 @@ export function installRemoteOpener(): void {
         (reserved) => {
           sessionId = reserved;
         },
+        tmuxSession,
       );
       if (integrate) {
         armed = armShellIntegration((data) => void session.write(data));

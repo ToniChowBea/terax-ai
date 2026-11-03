@@ -46,9 +46,11 @@ function writeSizes(sizes: Record<string, number>): void {
 type State = {
   filesExpanded: boolean;
   gitExpanded: boolean;
+  /** Fork-only (SSH port): the Persistent sessions section. */
+  sessionsExpanded: boolean;
   /** Height of each open section as a percentage of the panel. */
   sizes: Record<string, number>;
-  toggle: (section: "files" | "git") => void;
+  toggle: (section: "files" | "git" | "sessions") => void;
   setSize: (id: string, percent: number) => void;
 };
 
@@ -60,12 +62,15 @@ type State = {
 export const useRemoteSections = create<State>((set) => ({
   filesExpanded: true,
   gitExpanded: false,
+  sessionsExpanded: true,
   sizes: readSizes(),
   toggle: (section) =>
     set((s) =>
       section === "files"
         ? { filesExpanded: !s.filesExpanded }
-        : { gitExpanded: !s.gitExpanded },
+        : section === "sessions"
+          ? { sessionsExpanded: !s.sessionsExpanded }
+          : { gitExpanded: !s.gitExpanded },
     ),
   setSize: (id, percent) =>
     set((s) => {

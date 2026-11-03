@@ -67,6 +67,8 @@ export type CommandPaletteActionContext = {
   remotes: { id: string; label: string; address: string }[];
   connectRemote: (id: string) => void;
   openRemotes: () => void;
+  /** Fork-only (SSH port): set when the active tab is a persistent session. */
+  detachSession?: () => void;
 };
 
 const noop = () => {};
@@ -158,6 +160,18 @@ export function createCommandItems(
       icon: CloudServerIcon,
       run: () => ctx.connectRemote(r.id),
     })),
+    ...(ctx.detachSession
+      ? [
+          {
+            id: "remotes.detachSession",
+            title: "Persistent sessions: Detach this tab",
+            group: "Remotes" as const,
+            keywords: ["tmux", "detach", "session", "persistent"],
+            icon: CloudServerIcon,
+            run: ctx.detachSession,
+          },
+        ]
+      : []),
     {
       id: "tab.new",
       title: "New terminal",

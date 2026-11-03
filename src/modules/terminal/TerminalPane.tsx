@@ -38,6 +38,8 @@ export type TerminalPaneProps = {
   blocks?: boolean;
   /** Fork-only (SSH port): remote profile id when this pane is an SSH session. */
   remoteId?: string;
+  /** Fork-only (SSH port): tmux session this pane attaches to. */
+  tmuxSession?: string;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
   onExit?: (leafId: number, code: number) => void;
   onCwd?: (leafId: number, cwd: string) => void;
@@ -62,6 +64,7 @@ const GhosttyTerminalPane = memo(
       initialCwd,
       blocks = false,
       remoteId,
+      tmuxSession,
       onSearchReady,
       onExit,
       onCwd,
@@ -84,6 +87,7 @@ const GhosttyTerminalPane = memo(
       initialCwd,
       blocks,
       remoteId,
+      tmuxSession,
       onSearchReady: (search) => onSearchReady?.(leafId, search),
       onExit: (code) => onExit?.(leafId, code),
       onCwd: (cwd) => onCwd?.(leafId, cwd),

@@ -25,6 +25,8 @@ export async function openSsh(
   /** Receives the reserved id before the handshake, so prompts raised during
    *  it can be answered against a session that does not exist yet. */
   onReserved?: (id: number) => void,
+  /** Fork-only (SSH port): tmux session id to attach to instead of a shell. */
+  tmuxSession?: string,
 ): Promise<PtySession & { id: number }> {
   const onData = new Channel<ArrayBuffer>();
   const onEvent = new Channel<SshEvent>();
@@ -59,6 +61,7 @@ export async function openSsh(
       onData,
       onEvent,
       onExit,
+      tmuxSession: tmuxSession ?? null,
     });
   } catch (e) {
     releaseHandlers();

@@ -50,6 +50,12 @@ export type TerminalTab = TabBase & {
   customTitle?: string;
   /** Fork-only (SSH port): remote profile id when this tab holds SSH sessions. */
   remoteId?: string;
+  /**
+   * Fork-only (SSH port): tmux session id (`$n`) this tab is attached to.
+   * Splitting such a tab opens plain shells; only `tmuxLeafId` attaches.
+   */
+  tmuxSession?: string;
+  tmuxLeafId?: number;
 };
 
 export type EditorTab = TabBase & {
@@ -826,7 +832,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
 
   /** Fork-only (SSH port): a terminal tab whose panes are SSH sessions. */
   const newRemoteTab = useCallback(
-    (remoteId: string, title: string) => {
+    (remoteId: string, title: string, tmuxSession?: string) => {
       const tabId = nextIdRef.current++;
       const leafId = nextIdRef.current++;
       setTabs((t) => [
@@ -842,6 +848,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           activeLeafId: leafId,
           remoteId,
           customTitle: title,
+          ...(tmuxSession && { tmuxSession, tmuxLeafId: leafId }),
         },
       ]);
       setActiveId(tabId);

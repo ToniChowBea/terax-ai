@@ -37,6 +37,9 @@ export {
   type TerminalAppearanceOverride,
 } from "./lib/appearanceOverride";
 export type { PtySession } from "./lib/pty-bridge";
-export { registerRemoteOpener } from "./lib/remoteOpener";
+export {
+  type RemoteOpenOptions,
+  registerRemoteOpener,
+} from "./lib/remoteOpener";
 export type { TerminalBackground } from "./lib/terminalBackground";
 export { useTerminalFont } from "./lib/useTerminalFont";
