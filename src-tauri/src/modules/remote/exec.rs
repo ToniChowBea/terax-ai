@@ -68,14 +68,27 @@ fn build_list_command(root: &str, depth: &str, show_hidden: bool, limit: usize) 
     )
 }
 
+/// Every entry under the root, directories marked with a trailing `/` so one
+/// walk answers both "what" and "is it a directory". Capped so a huge tree
+/// (a home directory, a monorepo) costs a bounded walk rather than a hang.
 fn build_search_command(root: &str, show_hidden: bool) -> String {
     format!(
-        "find {} {} \\( -type f -o -type d \\){} -print 2>/dev/null | head -n 20000",
+        "find {} {} \\( -type d{} -exec printf '%s/\\n' {{}} + \\) -o \\( -type f{} -print \\) 2>/dev/null | head -n {}",
         path::quote(root),
         prune_expr(),
         hidden_filter(show_hidden),
+        hidden_filter(show_hidden),
+        SEARCH_WALK_CAP,
     )
 }
+
+/// Entries one remote search will look at. Beyond this the result is marked
+/// truncated; the user narrows the root or the query.
+pub const SEARCH_WALK_CAP: usize = 20_000;
+
+/// A walk that does not finish in this long is reported as truncated rather
+/// than holding the search box open (slow NFS, enormous trees).
+const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub async fn list_files(
     conn: &RemoteConn,
@@ -105,64 +118,82 @@ pub async fn search(
     limit: usize,
     show_hidden: bool,
 ) -> Result<SearchResult, String> {
+    let empty = |truncated| SearchResult {
+        hits: Vec::new(),
+        truncated,
+        cancelled: false,
+    };
     if query.trim().is_empty() {
-        return Ok(SearchResult {
-            hits: Vec::new(),
-            truncated: false,
-            cancelled: false,
-        });
+        return Ok(empty(false));
     }
     // Name matching happens here rather than in a remote regex so the query is
     // never interpreted as a pattern by a program on the far side.
-    let out = conn.exec(&build_search_command(root, show_hidden)).await?;
-    let text = out.stdout_text();
+    let walk = tokio::time::timeout(
+        SEARCH_TIMEOUT,
+        conn.exec(&build_search_command(root, show_hidden)),
+    )
+    .await;
+    let Ok(out) = walk else {
+        return Ok(empty(true));
+    };
+    let text = out?.stdout_text();
+    Ok(rank_search(root, &text, query, limit))
+}
 
-    let needle = query.to_lowercase();
-    let mut hits: Vec<SearchHit> = Vec::new();
-    let mut truncated = false;
-    for line in text.lines() {
-        if line == root {
+/// Fuzzy-rank a remote walk exactly like the local index does (nucleo, path
+/// matching, smart case), so Cmd+P behaves the same on both sides.
+pub(crate) fn rank_search(root: &str, listing: &str, query: &str, limit: usize) -> SearchResult {
+    use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+    let root_trimmed = root.trim_end_matches('/');
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    let mut seen = 0usize;
+    for line in listing.lines() {
+        seen += 1;
+        let (full, is_dir) = match line.strip_suffix('/') {
+            Some(dir) if !dir.is_empty() => (dir, true),
+            _ => (line, false),
+        };
+        if full == root_trimmed || full.is_empty() {
             continue;
         }
-        let name = path::basename(line);
-        if !name.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if hits.len() >= limit {
-            truncated = true;
-            break;
-        }
-        hits.push(SearchHit {
-            path: line.to_owned(),
-            rel: relative(root, line),
-            name: name.to_owned(),
-            // `find -type d` would need a second pass to distinguish; a
-            // trailing-slash test is not available, so ask for dirs directly.
-            is_dir: false,
-        });
+        entries.push((full.to_owned(), is_dir));
     }
 
-    // A second, cheap pass marks the directories among the hits.
-    if !hits.is_empty() {
-        let dirs = conn
-            .exec(&format!(
-                "find {} {} -type d -print 2>/dev/null | head -n 20000",
-                path::quote(root),
-                prune_expr(),
-            ))
-            .await?;
-        let dirs_text = dirs.stdout_text();
-        let dir_set: std::collections::HashSet<&str> = dirs_text.lines().collect();
-        for hit in &mut hits {
-            hit.is_dir = dir_set.contains(hit.path.as_str());
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let pattern = Pattern::parse(query.trim(), CaseMatching::Smart, Normalization::Smart);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(u32, usize)> = Vec::new();
+    for (i, (full, _)) in entries.iter().enumerate() {
+        let rel = relative(root, full);
+        if let Some(score) = pattern.score(Utf32Str::new(&rel, &mut buf), &mut matcher) {
+            scored.push((score, i));
         }
     }
-
-    Ok(SearchResult {
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| entries[a.1].0.len().cmp(&entries[b.1].0.len()))
+    });
+    let truncated = scored.len() > limit || seen >= SEARCH_WALK_CAP;
+    let hits = scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, i)| {
+            let (full, is_dir) = &entries[i];
+            SearchHit {
+                path: full.clone(),
+                rel: relative(root, full),
+                name: path::basename(full).to_owned(),
+                is_dir: *is_dir,
+            }
+        })
+        .collect();
+    SearchResult {
         hits,
         truncated,
         cancelled: false,
-    })
+    }
 }
 
 pub async fn grep(
@@ -327,6 +358,40 @@ mod tests {
     }
 
     #[test]
+    fn search_ranks_fuzzily_and_marks_directories() {
+        let listing = "/srv/app/\n/srv/app/src/\n/srv/app/src/main.rs\n/srv/app/docs/main.md\n/srv/app/src/deeply/nested/config.rs\n/srv/app/config.rs\n";
+        let res = rank_search("/srv/app", listing, "config", 10);
+        assert_eq!(res.hits[0].rel, "config.rs", "shorter path ranks first");
+        assert!(res.hits.iter().all(|h| h.rel != "src/main.rs"));
+
+        let res = rank_search("/srv/app", listing, "smr", 10);
+        assert_eq!(res.hits[0].rel, "src/main.rs", "subsequence match");
+
+        let res = rank_search("/srv/app", listing, "src", 10);
+        let src = res.hits.iter().find(|h| h.rel == "src").expect("dir hit");
+        assert!(src.is_dir);
+        assert_eq!(src.path, "/srv/app/src");
+        assert!(!res.hits.iter().any(|h| h.rel.is_empty()), "root excluded");
+    }
+
+    #[test]
+    fn search_reports_truncation_at_the_limit() {
+        let listing: String = (0..30).map(|i| format!("/r/file{i}.txt\n")).collect();
+        let res = rank_search("/r", &listing, "file", 5);
+        assert_eq!(res.hits.len(), 5);
+        assert!(res.truncated);
+    }
+
+    #[test]
+    fn search_walk_is_capped() {
+        let cmd = build_search_command("/srv", true);
+        assert!(
+            cmd.ends_with(&format!("head -n {SEARCH_WALK_CAP}")),
+            "{cmd}"
+        );
+    }
+
+    #[test]
     fn prune_expression_quotes_every_name() {
         let expr = prune_expr();
         assert!(expr.contains("-name '.git'"));
@@ -352,6 +417,9 @@ mod tests {
     #[test]
     fn hidden_filter_is_only_applied_when_hiding() {
         assert_eq!(hidden_filter(true), "");
-        assert!(hidden_filter(false).contains("! -path"), "POSIX negation, not the GNU -not spelling");
+        assert!(
+            hidden_filter(false).contains("! -path"),
+            "POSIX negation, not the GNU -not spelling"
+        );
     }
 }

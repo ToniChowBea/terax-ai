@@ -38,11 +38,10 @@ type State = {
 };
 
 async function authorize(cwd: string): Promise<void> {
-  const { conn, borrowed } = useRemoteBrowserStore.getState();
-  // Reading git status needs the directory authorized on the connection. On a
-  // borrowed one that would widen what the workspace, and so the AI tools,
-  // may write to, so only the browser's own connection is opened up this way.
-  if (conn === null || borrowed) return;
+  // Reading git status needs the directory authorized on the connection.
+  // The browsed directory is one the user is looking at on purpose.
+  const { conn } = useRemoteBrowserStore.getState();
+  if (conn === null) return;
   await invoke("remote_authorize", { conn, path: cwd }).catch(() => undefined);
 }
 

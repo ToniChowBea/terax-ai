@@ -231,6 +231,34 @@ live!(searches_by_filename, c, e, {
     assert_eq!(hit.rel, "src/main.rs", "rel must be relative to the root");
 });
 
+// Fork-only: Cmd+Shift+F on a remote root is fuzzy and marks directories,
+// from a single bounded walk.
+live!(fuzzy_search_marks_directories_and_hides_dotfiles, c, e, {
+    let res = exec::search(&c, &e.root, "smr", 50, false)
+        .await
+        .expect("fuzzy search");
+    assert!(
+        res.hits.iter().any(|h| h.rel == "src/main.rs"),
+        "subsequence 'smr' should find src/main.rs: {:?}",
+        res.hits.iter().map(|h| &h.rel).collect::<Vec<_>>()
+    );
+    let res = exec::search(&c, &e.root, "src", 50, false)
+        .await
+        .expect("dir search");
+    let dir = res
+        .hits
+        .iter()
+        .find(|h| h.rel == "src")
+        .expect("src dir hit");
+    assert!(dir.is_dir, "src must be reported as a directory");
+    assert!(
+        !res.hits
+            .iter()
+            .any(|h| h.rel.starts_with('.') || h.rel.contains("/.")),
+        "hidden entries must be filtered"
+    );
+});
+
 live!(greps_file_contents, c, e, {
     let res = exec::grep(&c, &e.root, "hello world", 50, true)
         .await

@@ -4,10 +4,9 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { create } from "zustand";
-import { openRemoteConnection } from "./connect";
+import { useRemoteHostsStore } from "./hosts";
 import type { RemoteProfile } from "./types";
 import { useRemotesStore } from "./store";
-import { useRemoteWorkspaceStore } from "./workspace";
 
 /** Trailing slash only for the root itself, so joins never double up. */
 export function joinRemote(dir: string, name: string): string {
@@ -21,23 +20,65 @@ export function parentRemote(dir: string): string | null {
   return cut === 0 ? "/" : dir.slice(0, cut);
 }
 
+export type DirState =
+  | { status: "loading" }
+  | { status: "loaded"; entries: DirEntry[] }
+  | { status: "error"; message: string };
+
+/** One visible row of the tree, flattened for rendering. */
+export type TreeRow = {
+  path: string;
+  entry: DirEntry;
+  depth: number;
+  expanded: boolean;
+};
+
+/**
+ * Depth-first rows under `root`, descending only into expanded directories.
+ * Pure, so the tree's shape is testable without a server.
+ */
+export function flattenTree(
+  root: string,
+  dirs: Readonly<Record<string, DirState>>,
+  expanded: ReadonlySet<string>,
+): TreeRow[] {
+  const rows: TreeRow[] = [];
+  const walk = (dir: string, depth: number) => {
+    const state = dirs[dir];
+    if (state?.status !== "loaded") return;
+    for (const entry of state.entries) {
+      const path = joinRemote(dir, entry.name);
+      const isOpen = entry.kind === "dir" && expanded.has(path);
+      rows.push({ path, entry, depth, expanded: isOpen });
+      if (isOpen) walk(path, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return rows;
+}
+
 type State = {
   profileId: string | null;
   conn: number | null;
-  /** True when the connection belongs to the workspace and is only borrowed. */
-  borrowed: boolean;
   home: string;
+  /** Root of the tree. Moves only on explicit navigation or when following. */
   cwd: string;
-  entries: DirEntry[];
+  dirs: Record<string, DirState>;
+  expanded: Set<string>;
   showHidden: boolean;
   connecting: boolean;
-  loading: boolean;
   error: string | null;
   open: (profile: RemoteProfile) => Promise<void>;
   close: () => Promise<void>;
+  /** Re-root the tree (Up, "Make root", follow terminal). */
   navigate: (dir: string) => Promise<void>;
+  /** Expand or collapse a directory in place. Never touches the terminal. */
+  toggle: (dir: string) => Promise<void>;
+  /** Reload the root and every expanded directory. */
   refresh: () => Promise<void>;
-  authorizeCwd: () => Promise<void>;
+  /** Reload one directory, after a mutation inside it. */
+  reload: (dir: string) => Promise<void>;
+  authorize: (dir: string) => Promise<void>;
   setShowHidden: (value: boolean) => void;
 };
 
@@ -45,84 +86,13 @@ function env(conn: number, profileId: string): WorkspaceEnv {
   return { kind: "ssh", conn, profileId };
 }
 
-export const useRemoteBrowserStore = create<State>((set, get) => ({
-  profileId: null,
-  conn: null,
-  borrowed: false,
-  home: "",
-  cwd: "",
-  entries: [],
-  showHidden: false,
-  connecting: false,
-  loading: false,
-  error: null,
-
-  open: async (profile) => {
-    const current = get();
-    if (current.profileId === profile.id && current.conn !== null) {
-      const alive = await invoke<boolean>("remote_is_open", {
-        id: current.conn,
-      }).catch(() => false);
-      if (alive) return;
-    }
-    if (current.conn !== null) await get().close();
-
-    set({ connecting: true, error: null, profileId: profile.id });
-    try {
-      // The workspace already holds a connection to this host; a second one
-      // would cost another handshake and, on a password host, another prompt.
-      const workspace = useRemoteWorkspaceStore.getState().active;
-      const reuse =
-        workspace?.profileId === profile.id &&
-        (await invoke<boolean>("remote_is_open", { id: workspace.conn }).catch(
-          () => false,
-        ));
-
-      const opened = reuse
-        ? { conn: workspace.conn, home: workspace.home }
-        : await openRemoteConnection(profile);
-
-      const start = profile.cwd?.trim() || opened.home;
-      set({
-        conn: opened.conn,
-        borrowed: !!reuse,
-        home: opened.home,
-        connecting: false,
-        error: null,
-      });
-      await get().navigate(start);
-    } catch (e) {
-      set({
-        connecting: false,
-        error: String(e),
-        profileId: null,
-        conn: null,
-        entries: [],
-      });
-    }
-  },
-
-  close: async () => {
-    const { conn, borrowed } = get();
-    set({
-      profileId: null,
-      conn: null,
-      borrowed: false,
-      home: "",
-      cwd: "",
-      entries: [],
-      error: null,
-    });
-    // Never close a connection the workspace is still using.
-    if (conn !== null && !borrowed) {
-      await invoke("remote_close", { id: conn }).catch(() => {});
-    }
-  },
-
-  navigate: async (dir) => {
+export const useRemoteBrowserStore = create<State>((set, get) => {
+  const load = async (dir: string): Promise<void> => {
     const { conn, profileId } = get();
     if (conn === null || !profileId) return;
-    set({ loading: true, error: null });
+    if (get().dirs[dir]?.status !== "loaded") {
+      set((s) => ({ dirs: { ...s.dirs, [dir]: { status: "loading" } } }));
+    }
     try {
       const entries = await invoke<DirEntry[]>("fs_read_dir", {
         path: dir,
@@ -130,34 +100,120 @@ export const useRemoteBrowserStore = create<State>((set, get) => ({
         gitDecorations: false,
         workspace: env(conn, profileId),
       });
-      set({ cwd: dir, entries, loading: false, error: null });
+      if (get().conn !== conn) return;
+      set((s) => ({
+        dirs: { ...s.dirs, [dir]: { status: "loaded", entries } },
+      }));
     } catch (e) {
-      set({ loading: false, error: String(e) });
+      if (get().conn !== conn) return;
+      set((s) => ({
+        dirs: { ...s.dirs, [dir]: { status: "error", message: String(e) } },
+      }));
     }
-  },
+  };
 
-  refresh: async () => {
-    const { cwd } = get();
-    if (cwd) await get().navigate(cwd);
-  },
+  return {
+    profileId: null,
+    conn: null,
+    home: "",
+    cwd: "",
+    dirs: {},
+    expanded: new Set(),
+    showHidden: false,
+    connecting: false,
+    error: null,
 
-  /**
-   * Reads are unrestricted but writes are confined to the roots a connection
-   * has been given, and browsing is not itself a reason to widen them. This
-   * runs on an explicit create, rename or delete, which is the user asking for
-   * this directory the same way opening it as a workspace would.
-   */
-  authorizeCwd: async () => {
-    const { conn, cwd } = get();
-    if (conn === null || !cwd) return;
-    await invoke("remote_authorize", { conn, path: cwd });
-  },
+    open: async (profile) => {
+      const current = get();
+      if (current.profileId === profile.id && current.conn !== null) {
+        const alive = await invoke<boolean>("remote_is_open", {
+          id: current.conn,
+        }).catch(() => false);
+        if (alive) return;
+      }
+      set({
+        connecting: true,
+        error: null,
+        profileId: profile.id,
+        conn: null,
+        dirs: {},
+        expanded: new Set(),
+      });
+      // The host's shared file connection: the same one the Explorer, search
+      // and editors use, riding the terminal's authenticated transport.
+      const host = await useRemoteHostsStore.getState().ensure(profile.id);
+      if (get().profileId !== profile.id) return;
+      if (!host) {
+        set({
+          connecting: false,
+          error:
+            useRemoteHostsStore.getState().errors[profile.id] ??
+            "could not connect",
+          profileId: null,
+        });
+        return;
+      }
+      const start = profile.cwd?.trim() || host.home;
+      set({ conn: host.conn, home: host.home, connecting: false, error: null });
+      await get().navigate(start);
+    },
 
-  setShowHidden: (value) => {
-    set({ showHidden: value });
-    void get().refresh();
-  },
-}));
+    close: async () => {
+      // The connection belongs to the hosts store, which outlives the panel.
+      set({
+        profileId: null,
+        conn: null,
+        home: "",
+        cwd: "",
+        dirs: {},
+        expanded: new Set(),
+        error: null,
+      });
+    },
+
+    navigate: async (dir) => {
+      if (get().conn === null) return;
+      set({ cwd: dir, expanded: new Set(), error: null });
+      await load(dir);
+    },
+
+    toggle: async (dir) => {
+      const expanded = new Set(get().expanded);
+      if (expanded.has(dir)) {
+        expanded.delete(dir);
+        set({ expanded });
+        return;
+      }
+      expanded.add(dir);
+      set({ expanded });
+      if (get().dirs[dir]?.status !== "loaded") await load(dir);
+    },
+
+    refresh: async () => {
+      const { cwd, expanded } = get();
+      if (!cwd) return;
+      await Promise.all([cwd, ...expanded].map((d) => load(d)));
+    },
+
+    reload: (dir) => load(dir),
+
+    /**
+     * Reads are unrestricted but writes are confined to the roots a
+     * connection has been given. An explicit create, rename or delete is the
+     * user asking for this directory the same way opening it would.
+     */
+    authorize: async (dir) => {
+      const { conn } = get();
+      if (conn === null || !dir) return;
+      await invoke("remote_authorize", { conn, path: dir });
+    },
+
+    setShowHidden: (value) => {
+      set({ showHidden: value, dirs: {} });
+      void get().refresh();
+    },
+  };
+});
 
 /** The env the panel's own actions run against, never the app's current one. */
 export function browserEnv(): WorkspaceEnv | null {
@@ -166,10 +222,9 @@ export function browserEnv(): WorkspaceEnv | null {
 }
 
 /**
- * Walk the browser to wherever the terminal is standing, so a cd moves the
- * tree and the git section with it. Only when the preference asks for it: the
- * alternative is browsing somewhere and having it yanked back on the next
- * prompt.
+ * Re-root the tree wherever the terminal is standing, so a cd moves the tree
+ * and the git section with it. Only when the preference asks for it. This is
+ * one-way: clicking in the tree never sends anything to the terminal.
  *
  * The cwd is only known when the host's shell emits OSC 7. Nothing happens on
  * a host that does not, which is why this cannot be the only way to navigate.
@@ -177,13 +232,13 @@ export function browserEnv(): WorkspaceEnv | null {
 export function useFollowTerminal(terminalCwd: string | undefined): void {
   const follow = usePreferencesStore((s) => s.remoteFollowTerminal);
   const conn = useRemoteBrowserStore((s) => s.conn);
-  const cwd = useRemoteBrowserStore((s) => s.cwd);
 
   useEffect(() => {
     if (!follow || conn === null) return;
-    if (!terminalCwd || terminalCwd === cwd) return;
+    if (!terminalCwd?.startsWith("/")) return;
+    if (terminalCwd === useRemoteBrowserStore.getState().cwd) return;
     void useRemoteBrowserStore.getState().navigate(terminalCwd);
-  }, [follow, conn, cwd, terminalCwd]);
+  }, [follow, conn, terminalCwd]);
 }
 
 /**
