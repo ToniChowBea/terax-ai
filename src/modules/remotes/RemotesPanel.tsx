@@ -1,0 +1,896 @@
+import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { Input } from "@/components/ui/input";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import type { PanelImperativeHandle } from "react-resizable-panels";
+import { cn } from "@/lib/utils";
+import {
+  ArrowDataTransferHorizontalIcon,
+  ArrowDown01Icon,
+  ArrowRight01Icon,
+  CloudServerIcon,
+  Copy01Icon,
+  Delete02Icon,
+  FolderAddIcon,
+  PencilEdit02Icon,
+  PlusSignIcon,
+  Cancel01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { GroupDialog } from "./GroupDialog";
+import { HostDialog } from "./HostDialog";
+import { RemoteFiles } from "./RemoteFiles";
+import { RemoteGit } from "./RemoteGit";
+import { useFollowTerminal, useRemoteBrowserStore } from "./lib/browser";
+import { useRemoteSections } from "./lib/sections";
+import { TransferDialog } from "./TransferDialog";
+import { emptyProfile, useRemotesStore } from "./lib/store";
+import { buildRemoteTree, profileAddress, profileLabel, uniqueName } from "./lib/tree";
+import { describeForward, findActiveForward, useTunnelStore } from "./lib/tunnels";
+import { toast } from "sonner";
+import type {
+  ActiveForward,
+  RemoteForward,
+  RemoteGroup,
+  RemoteProfile,
+} from "./lib/types";
+
+type Props = {
+  /** Open a terminal tab connected to this host. */
+  onConnect: (profile: RemoteProfile) => void;
+  /** Point the explorer, editor and source control at this host. */
+  onOpenWorkspace: (profile: RemoteProfile) => void;
+  /** Profile id of the remote workspace currently open, if any. */
+  activeWorkspaceId: string | null;
+  /** Connection id backing that workspace, which forwards ride on. */
+  activeWorkspaceConn: number | null;
+  /** Send a line to the active terminal, used by the browser's "cd here". */
+  onRunInTerminal?: (line: string) => void;
+  /** Open a remote file in an editor tab. */
+  onOpenFile?: (path: string) => void;
+  /** Profile the active terminal is connected to, and where it is standing. */
+  activeTerminalRemoteId?: string;
+  activeTerminalCwd?: string;
+};
+
+export function RemotesPanel({
+  onConnect,
+  onOpenWorkspace,
+  activeWorkspaceId,
+  activeWorkspaceConn,
+  onRunInTerminal,
+  onOpenFile,
+  activeTerminalRemoteId,
+  activeTerminalCwd,
+}: Props) {
+  const browserConn = useRemoteBrowserStore((s) => s.conn);
+  const browserProfileId = useRemoteBrowserStore((s) => s.profileId);
+  const browserConnecting = useRemoteBrowserStore((s) => s.connecting);
+  const filesExpanded = useRemoteSections((s) => s.filesExpanded);
+  const gitExpanded = useRemoteSections((s) => s.gitExpanded);
+  const toggleSection = useRemoteSections((s) => s.toggle);
+  const browserHost = useRemotesStore(
+    (s) => s.profiles.find((p) => p.id === browserProfileId)?.name,
+  );
+  const activeForwards = useTunnelStore((s) => s.active);
+  const refreshForwards = useTunnelStore((s) => s.refresh);
+
+  useEffect(() => {
+    void refreshForwards();
+  }, [refreshForwards]);
+
+  const toggleForward = useCallback(
+    (profile: RemoteProfile, forward: RemoteForward) => {
+      const conn = activeWorkspaceId === profile.id ? activeWorkspaceConn : null;
+      const running = findActiveForward(
+        useTunnelStore.getState().active,
+        conn ?? -1,
+        forward,
+      );
+      if (running) {
+        void useTunnelStore.getState().stop(running.id);
+        return;
+      }
+      if (conn === null) return;
+      void useTunnelStore
+        .getState()
+        .start(conn, forward)
+        .then((info) => {
+          toast.success(
+            `Forwarding ${info.bindAddress}:${info.localPort} to ${info.remoteHost}:${info.remotePort}`,
+          );
+        })
+        .catch((e) => {
+          toast.error("Could not start the forward", {
+            description: String(e),
+          });
+        });
+    },
+    [activeWorkspaceId, activeWorkspaceConn],
+  );
+  const profiles = useRemotesStore((s) => s.profiles);
+  const groups = useRemotesStore((s) => s.groups);
+  const hydrated = useRemotesStore((s) => s.hydrated);
+  const init = useRemotesStore((s) => s.init);
+  const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState<RemoteProfile | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<RemoteGroup | null>(null);
+
+  useEffect(() => {
+    void init();
+  }, [init]);
+
+  const tree = useMemo(
+    () => buildRemoteTree(profiles, groups, query),
+    [profiles, groups, query],
+  );
+
+  const showFiles = browserConn !== null || browserConnecting;
+
+  useFollowTerminal(
+    activeTerminalRemoteId === browserProfileId
+      ? activeTerminalCwd
+      : undefined,
+  );
+
+  // Pointer-based rather than HTML5 drag: the window keeps Tauri's file-drop
+  // handler on for the explorer and terminal, which takes the webview's drop
+  // target on Windows and leaves in-page dragstart/drop dead. Window listeners
+  // rather than setPointerCapture, because capture retargets the compatibility
+  // mouse events and would break the row's own click and double-click.
+  const drag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    id: string;
+    active: boolean;
+  } | null>(null);
+  const dropRef = useRef<string | null | undefined>(undefined);
+  const listeners = useRef<((e: PointerEvent) => void)[] | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropGroupId, setDropGroupId] = useState<string | null | undefined>(
+    undefined,
+  );
+
+  const detach = useCallback(() => {
+    const l = listeners.current;
+    if (!l) return;
+    window.removeEventListener("pointermove", l[0]);
+    window.removeEventListener("pointerup", l[1]);
+    window.removeEventListener("pointercancel", l[1]);
+    listeners.current = null;
+  }, []);
+
+  useEffect(() => detach, [detach]);
+
+  const onDragPointerDown = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+    detach();
+    drag.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      id,
+      active: false,
+    };
+
+    const move = (ev: PointerEvent) => {
+      const st = drag.current;
+      if (!st || st.pointerId !== ev.pointerId) return;
+      if (!st.active) {
+        if (Math.hypot(ev.clientX - st.startX, ev.clientY - st.startY) < 5)
+          return;
+        st.active = true;
+        setDraggingId(st.id);
+        document.body.style.userSelect = "none";
+      }
+      const hit = document
+        .elementFromPoint(ev.clientX, ev.clientY)
+        ?.closest("[data-drop='group']");
+      const raw = hit?.getAttribute("data-group-id");
+      const next = raw == null ? undefined : raw === "" ? null : raw;
+      dropRef.current = next;
+      setDropGroupId(next);
+    };
+
+    const up = () => {
+      const st = drag.current;
+      const target = dropRef.current;
+      if (st?.active && target !== undefined) {
+        const store = useRemotesStore.getState();
+        const moved = store.profiles.find((p) => p.id === st.id);
+        if (moved && moved.groupId !== target) {
+          void store.moveToGroup(st.id, target);
+        }
+      }
+      drag.current = null;
+      dropRef.current = undefined;
+      setDraggingId(null);
+      setDropGroupId(undefined);
+      document.body.style.userSelect = "";
+      detach();
+    };
+
+    listeners.current = [move, up];
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <Header
+        onAddHost={() => setEditing(emptyProfile())}
+        onAddGroup={() => void useRemotesStore.getState().createGroup("New group")}
+        onImport={() => setImporting(true)}
+      />
+
+      <div className="px-2 pb-1.5">
+        <div className="relative">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            size={12}
+            strokeWidth={1.9}
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/70"
+          />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter hosts"
+            spellCheck={false}
+            className="h-7 rounded-md border-border/60 bg-foreground/[0.03] pl-7 text-[11.5px]"
+          />
+        </div>
+      </div>
+
+      <PanelBody
+        sections={
+          showFiles
+            ? [
+                {
+                  id: "remotes-files",
+                  expanded: filesExpanded,
+                  node: (
+                    <Section
+                      title={browserHost ? `Files on ${browserHost}` : "Files"}
+                      expanded={filesExpanded}
+                      onToggle={() => toggleSection("files")}
+                      onClose={() =>
+                        void useRemoteBrowserStore.getState().close()
+                      }
+                    >
+                      <RemoteFiles
+                        onRunInTerminal={onRunInTerminal}
+                        onOpenFile={onOpenFile}
+                      />
+                    </Section>
+                  ),
+                },
+                {
+                  id: "remotes-git",
+                  expanded: gitExpanded,
+                  node: (
+                    <Section
+                      title="Git"
+                      expanded={gitExpanded}
+                      onToggle={() => toggleSection("git")}
+                    >
+                      <RemoteGit />
+                    </Section>
+                  ),
+                },
+              ]
+            : []
+        }
+      >
+      <div className="h-full overflow-y-auto pb-2">
+        {!hydrated ? null : profiles.length === 0 ? (
+          <EmptyState
+            onAddHost={() => setEditing(emptyProfile())}
+            onImport={() => setImporting(true)}
+          />
+        ) : tree.length === 0 ? (
+          <p className="px-3 py-3 text-[11px] text-muted-foreground">
+            No hosts match "{query}".
+          </p>
+        ) : (
+          tree.map(({ group, profiles: rows }) => (
+            <GroupSection
+              key={group?.id ?? "__ungrouped"}
+              group={group}
+              rows={rows}
+              groups={groups}
+              allNames={profiles.map((p) => p.name)}
+              isDropTarget={
+                draggingId !== null && dropGroupId === (group?.id ?? null)
+              }
+              draggingId={draggingId}
+              onDragPointerDown={onDragPointerDown}
+              onConnect={onConnect}
+              onOpenWorkspace={onOpenWorkspace}
+              activeWorkspaceId={activeWorkspaceId}
+              onToggleForward={toggleForward}
+              activeForwards={activeForwards}
+              activeWorkspaceConn={activeWorkspaceConn}
+              onEdit={setEditing}
+              onEditGroup={setEditingGroup}
+            />
+          ))
+        )}
+        {draggingId !== null && tree.every(({ group }) => group !== null) ? (
+          // Every host is grouped, so the tree renders no ungrouped section and
+          // a drag would have nowhere to drop a host back out to.
+          <div
+            data-drop="group"
+            data-group-id=""
+            className={cn(
+              "mx-2 mt-1 rounded-md border border-dashed border-border px-2.5 py-2 text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground/85 transition-colors",
+              dropGroupId === null && "border-primary/40 bg-primary/10",
+            )}
+          >
+            Ungrouped
+          </div>
+        ) : null}
+      </div>
+      </PanelBody>
+
+      {editing ? (
+        <HostDialog
+          profile={editing}
+          groups={groups}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
+      {importing ? (
+        <TransferDialog onClose={() => setImporting(false)} />
+      ) : null}
+      {editingGroup ? (
+        <GroupDialog
+          group={editingGroup}
+          onClose={() => setEditingGroup(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function Header({
+  onAddHost,
+  onAddGroup,
+  onImport,
+}: {
+  onAddHost: () => void;
+  onAddGroup: () => void;
+  onImport: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-1 px-2.5 pb-1.5 pt-2.5">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
+        Remotes
+      </span>
+      <div className="flex items-center gap-0.5">
+        <IconAction icon={PlusSignIcon} label="New host" onClick={onAddHost} />
+        <IconAction
+          icon={FolderAddIcon}
+          label="New group"
+          onClick={onAddGroup}
+        />
+        <IconAction
+          icon={ArrowDataTransferHorizontalIcon}
+          label="Import and export hosts"
+          onClick={onImport}
+        />
+      </div>
+    </div>
+  );
+}
+
+function IconAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="size-6 rounded-md text-muted-foreground hover:text-foreground"
+    >
+      <HugeiconsIcon icon={icon} size={13} strokeWidth={1.9} />
+    </Button>
+  );
+}
+
+type HostDragProps = {
+  draggingId: string | null;
+  onDragPointerDown: (e: React.PointerEvent, id: string) => void;
+};
+
+/**
+ * The hosts list, with the file browser occupying an adjustable share beneath
+ * it. Collapsing hides only the listing: the heading stays put, because the
+ * section is dismissed with its close button rather than by shrinking it away.
+ */
+type Section = { id: string; expanded: boolean; node: React.ReactNode };
+
+/**
+ * The hosts list, with any open sections taking an adjustable share beneath
+ * it. A collapsed section keeps its heading but leaves the group, so the
+ * remaining ones get the space rather than a row of zero-height panels.
+ */
+function PanelBody({
+  sections,
+  children,
+}: {
+  sections: Section[];
+  children: React.ReactNode;
+}) {
+  const sizes = useRemoteSections((s) => s.sizes);
+  const setSize = useRemoteSections((s) => s.setSize);
+  const refs = useRef(new Map<string, PanelImperativeHandle>());
+  const hosts = (
+    <div className="h-full overflow-y-auto pb-2">{children}</div>
+  );
+  const expanded = sections.filter((s) => s.expanded);
+  const collapsed = sections.filter((s) => !s.expanded);
+
+  if (expanded.length === 0) {
+    return (
+      <>
+        <div className="min-h-0 flex-1 overflow-y-auto pb-2">{children}</div>
+        {collapsed.map((s) => (
+          <Fragment key={s.id}>{s.node}</Fragment>
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <ResizablePanelGroup
+        orientation="vertical"
+        className="min-h-0 flex-1"
+        onLayoutChanged={(_, { isUserInteraction }) => {
+          if (!isUserInteraction) return;
+          for (const s of expanded) {
+            const percent = refs.current.get(s.id)?.getSize().asPercentage;
+            if (percent != null) setSize(s.id, percent);
+          }
+        }}
+      >
+        <ResizablePanel id="remotes-hosts" minSize="15%">
+          {hosts}
+        </ResizablePanel>
+        {expanded.map((s) => (
+          <Fragment key={s.id}>
+            <ResizableHandle className="bg-border/60" />
+            <ResizablePanel
+              id={s.id}
+              minSize="15%"
+              defaultSize={sizes[s.id] ? `${sizes[s.id]}%` : undefined}
+              panelRef={(r) => {
+                if (r) refs.current.set(s.id, r);
+                else refs.current.delete(s.id);
+              }}
+            >
+              {s.node}
+            </ResizablePanel>
+          </Fragment>
+        ))}
+      </ResizablePanelGroup>
+      {collapsed.map((s) => (
+        <Fragment key={s.id}>{s.node}</Fragment>
+      ))}
+    </>
+  );
+}
+
+/** Heading, collapse chevron and close button shared by the lower sections. */
+function Section({
+  title,
+  expanded,
+  onToggle,
+  onClose,
+  children,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+  onClose?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 flex-col border-t border-border/40",
+        expanded ? "h-full" : "shrink-0",
+      )}
+    >
+      <div className="flex shrink-0 items-center gap-1 px-1 pb-1 pt-1.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-accent"
+        >
+          <HugeiconsIcon
+            icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
+            size={12}
+            strokeWidth={2}
+            className="shrink-0 text-muted-foreground"
+          />
+          <span className="truncate text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
+            {title}
+          </span>
+        </button>
+        {onClose ? (
+          <IconAction
+            icon={Cancel01Icon}
+            label="Close the file browser"
+            onClick={onClose}
+          />
+        ) : null}
+      </div>
+      {expanded ? <div className="min-h-0 flex-1">{children}</div> : null}
+    </div>
+  );
+}
+
+function GroupSection({
+  group,
+  rows,
+  groups,
+  allNames,
+  isDropTarget,
+  draggingId,
+  onDragPointerDown,
+  onConnect,
+  onOpenWorkspace,
+  activeWorkspaceId,
+  onToggleForward,
+  activeForwards,
+  activeWorkspaceConn,
+  onEdit,
+  onEditGroup,
+}: {
+  group: RemoteGroup | null;
+  rows: RemoteProfile[];
+  groups: Array<{ id: string; name: string }>;
+  allNames: string[];
+  isDropTarget: boolean;
+  onConnect: (profile: RemoteProfile) => void;
+  onOpenWorkspace: (profile: RemoteProfile) => void;
+  activeWorkspaceId: string | null;
+  onToggleForward: (profile: RemoteProfile, forward: RemoteForward) => void;
+  activeForwards: ActiveForward[];
+  activeWorkspaceConn: number | null;
+  onEdit: (profile: RemoteProfile) => void;
+  onEditGroup: (group: RemoteGroup) => void;
+} & HostDragProps) {
+  const store = useRemotesStore.getState();
+  const collapsed = group?.collapsed ?? false;
+
+  return (
+    <div
+      data-drop="group"
+      data-group-id={group?.id ?? ""}
+      className={cn(
+        "mb-0.5 rounded-md transition-colors",
+        isDropTarget && "bg-primary/10 outline outline-1 outline-primary/40",
+      )}
+    >
+      {group ? (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={() => void store.toggleGroup(group.id)}
+              className="flex w-full cursor-pointer items-center gap-1 px-2.5 py-1 text-left text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/85 transition-colors hover:text-foreground"
+            >
+              <HugeiconsIcon
+                icon={collapsed ? ArrowRight01Icon : ArrowDown01Icon}
+                size={12}
+                strokeWidth={2}
+                className="shrink-0"
+              />
+              {group.color ? (
+                <span
+                  aria-hidden
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ background: group.color }}
+                />
+              ) : null}
+              <span className="truncate">{group.name}</span>
+              <span className="ml-auto tabular-nums text-muted-foreground/60">
+                {rows.length}
+              </span>
+            </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-44">
+            <ContextMenuItem onSelect={() => onEditGroup(group)}>
+              <HugeiconsIcon icon={PencilEdit02Icon} size={13} />
+              Edit group
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              variant="destructive"
+              onSelect={() => void store.deleteGroup(group.id)}
+            >
+              <HugeiconsIcon icon={Delete02Icon} size={13} />
+              Delete group
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      ) : rows.length > 0 && groups.length > 0 ? (
+        <div className="px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/85">
+          Ungrouped
+        </div>
+      ) : null}
+
+      {collapsed
+        ? null
+        : rows.map((profile) => (
+            <HostRow
+              key={profile.id}
+              profile={profile}
+              indented={group !== null}
+              groups={groups}
+              allNames={allNames}
+              isDragging={draggingId === profile.id}
+              onDragPointerDown={onDragPointerDown}
+              onConnect={onConnect}
+              onOpenWorkspace={onOpenWorkspace}
+              activeWorkspaceId={activeWorkspaceId}
+              onToggleForward={onToggleForward}
+              activeForwards={activeForwards}
+              activeWorkspaceConn={activeWorkspaceConn}
+              onEdit={onEdit}
+            />
+          ))}
+    </div>
+  );
+}
+
+function HostRow({
+  profile,
+  indented,
+  groups,
+  allNames,
+  isDragging,
+  onDragPointerDown,
+  onConnect,
+  onOpenWorkspace,
+  activeWorkspaceId,
+  onToggleForward,
+  activeForwards,
+  activeWorkspaceConn,
+  onEdit,
+}: {
+  profile: RemoteProfile;
+  /** Hosts sit under their group heading, ungrouped ones stay flush. */
+  indented: boolean;
+  groups: Array<{ id: string; name: string }>;
+  allNames: string[];
+  isDragging: boolean;
+  onConnect: (profile: RemoteProfile) => void;
+  onOpenWorkspace: (profile: RemoteProfile) => void;
+  activeWorkspaceId: string | null;
+  onToggleForward: (profile: RemoteProfile, forward: RemoteForward) => void;
+  activeForwards: ActiveForward[];
+  activeWorkspaceConn: number | null;
+  onEdit: (profile: RemoteProfile) => void;
+} & Omit<HostDragProps, "draggingId">) {
+  const store = useRemotesStore.getState();
+  const isWorkspace = activeWorkspaceId === profile.id;
+  // Forwards ride on this profile's own connection, which only exists while
+  // it is the open workspace.
+  const connForProfile = isWorkspace ? activeWorkspaceConn : null;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          onPointerDown={(e) => onDragPointerDown(e, profile.id)}
+          className={cn(
+            "group flex w-full items-center gap-2 py-[5px] pe-2.5 transition-colors",
+            indented ? "ps-5" : "ps-2.5",
+            "hover:bg-foreground/[0.045] focus-within:bg-foreground/[0.06]",
+            isDragging && "opacity-50",
+          )}
+        >
+          <span
+            aria-hidden
+            title={isWorkspace ? "Open as workspace" : undefined}
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              isWorkspace && "ring-2 ring-primary/50",
+            )}
+            style={{ background: profile.color ?? "var(--muted-foreground)" }}
+          />
+          {/* The row itself connects; a nested button would be invalid markup,
+              so the visible Connect affordance is a sibling. */}
+          <button
+            type="button"
+            onDoubleClick={() => onConnect(profile)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onConnect(profile);
+            }}
+            title={profileAddress(profile)}
+            className="min-w-0 flex-1 cursor-pointer text-left outline-none"
+          >
+            <span className="block truncate text-[11.5px] leading-tight text-foreground">
+              {profileLabel(profile)}
+            </span>
+            <span className="block truncate text-[10.5px] leading-tight text-muted-foreground/80">
+              {profileAddress(profile)}
+            </span>
+          </button>
+          <button
+            type="button"
+            data-no-drag
+            aria-label={`Connect to ${profileLabel(profile)}`}
+            onClick={() => onConnect(profile)}
+            className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            Connect
+          </button>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-48">
+        <ContextMenuItem onSelect={() => onConnect(profile)}>
+          Open terminal
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onOpenWorkspace(profile)}>
+          {isWorkspace ? "Reopen as workspace" : "Open as workspace"}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onEdit(profile)}>
+          <HugeiconsIcon icon={PencilEdit02Icon} size={13} />
+          Edit
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => {
+            const now = Date.now();
+            void store.saveProfile({
+              ...profile,
+              id: crypto.randomUUID(),
+              name: uniqueName(allNames, profileLabel(profile)),
+              createdAt: now,
+              updatedAt: now,
+            });
+          }}
+        >
+          <HugeiconsIcon icon={Copy01Icon} size={13} />
+          Duplicate
+        </ContextMenuItem>
+        {(profile.forwards ?? []).length > 0 ? (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>Port forwards</ContextMenuSubTrigger>
+            <ContextMenuSubContent className="w-64">
+              {(profile.forwards ?? []).map((forward) => {
+                const running = findActiveForward(
+                  activeForwards,
+                  connForProfile ?? -1,
+                  forward,
+                );
+                return (
+                  <ContextMenuItem
+                    key={forward.id}
+                    disabled={connForProfile === null && !running}
+                    onSelect={() => onToggleForward(profile, forward)}
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {forward.label?.trim() || describeForward(forward)}
+                    </span>
+                    <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
+                      {running ? `stop :${running.localPort}` : "start"}
+                    </span>
+                  </ContextMenuItem>
+                );
+              })}
+              {connForProfile === null ? (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem disabled>
+                    Open as workspace first
+                  </ContextMenuItem>
+                </>
+              ) : null}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        ) : null}
+        {groups.length > 0 ? (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>Move to group</ContextMenuSubTrigger>
+            <ContextMenuSubContent className="w-40">
+              <ContextMenuItem
+                onSelect={() => void store.moveToGroup(profile.id, null)}
+              >
+                Ungrouped
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              {groups.map((g) => (
+                <ContextMenuItem
+                  key={g.id}
+                  onSelect={() => void store.moveToGroup(profile.id, g.id)}
+                >
+                  {g.name}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        ) : null}
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={() => void store.deleteProfile(profile.id)}
+        >
+          <HugeiconsIcon icon={Delete02Icon} size={13} />
+          Delete
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+function EmptyState({
+  onAddHost,
+  onImport,
+}: {
+  onAddHost: () => void;
+  onImport: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+      <HugeiconsIcon
+        icon={CloudServerIcon}
+        size={22}
+        strokeWidth={1.5}
+        className="text-muted-foreground/50"
+      />
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        No remote hosts yet. Add one, or import them from your
+        <code className="mx-1">~/.ssh/config</code> or another Terax instance.
+      </p>
+      <div className="mt-1 flex gap-2">
+        <Button size="sm" variant="outline" onClick={onAddHost}>
+          Add host
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onImport}>
+          Import
+        </Button>
+      </div>
+    </div>
+  );
+}

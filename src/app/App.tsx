@@ -56,6 +56,19 @@ import {
   shouldDisablePaneSwapShortcut,
   useGlobalShortcuts,
 } from "@/modules/shortcuts";
+// Fork-only (SSH port).
+import {
+  installRemoteOpener,
+  profileAddress,
+  profileLabel,
+  RemotePrompts,
+  type RemoteProfile,
+  RemotesPanel,
+  useBrowserTracksTabs,
+  useRemoteBrowserStore,
+  useRemotesStore,
+  useRemoteWorkspaceStore,
+} from "@/modules/remotes";
 import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -116,6 +129,7 @@ import {
   workspaceScopeKey,
 } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -166,6 +180,7 @@ export default function App() {
     setActiveSpaceForNewTabs,
     newTab,
     newBlockTab,
+    newRemoteTab,
     newAgentTab,
     newAgentGroupTab,
     newPrivateTab,
@@ -262,11 +277,12 @@ export default function App() {
   const sourceControlSpaceId = activeSpaceId ?? DEFAULT_SPACE_ID;
 
   const handleWorkspaceChange = useCallback(
-    async (env: WorkspaceEnv) => {
+    async (env: WorkspaceEnv): Promise<boolean> => {
       const switched = await switchWorkspace(env);
       if (switched && activeSpaceId) {
         useSpaces.getState().setEnv(activeSpaceId, env);
       }
+      return switched;
     },
     [switchWorkspace, activeSpaceId],
   );
@@ -362,6 +378,20 @@ export default function App() {
   const { hasComposer, keysLoaded } = useAiBootstrap();
 
   const activeTab = tabs.find((t) => t.id === activeId);
+
+  // Fork-only (SSH port): the remote file browser follows whichever host tab
+  // is active, and closes when the last tab for its host goes away.
+  const openRemoteIds = useMemo(
+    () =>
+      tabs.flatMap((t) =>
+        t.kind === "terminal" && t.remoteId ? [t.remoteId] : [],
+      ),
+    [tabs],
+  );
+  useBrowserTracksTabs(
+    openRemoteIds,
+    activeTab?.kind === "terminal" ? activeTab.remoteId : undefined,
+  );
   const isTerminalTab = activeTab?.kind === "terminal";
   const isBlockTab = activeTerminalTab?.blocks === true;
   const isEditorTab = activeTab?.kind === "editor";
@@ -687,6 +717,129 @@ export default function App() {
     },
     [openFileTab, newMarkdownTab],
   );
+
+  // ---- Fork-only (SSH port): remote hosts --------------------------------
+  // The terminal reaches SSH through a registered opener so it never depends
+  // on the remotes module. Installed once, before any remote pane can spawn.
+  useEffect(() => {
+    installRemoteOpener();
+    void useRemotesStore.getState().init();
+  }, []);
+
+  const remoteProfiles = useRemotesStore((s) => s.profiles);
+
+  const connectToRemote = useCallback(
+    (profile: RemoteProfile) => {
+      newRemoteTab(profile.id, profile.name.trim() || profile.host);
+      // The file browser rides its own SFTP connection; opening a terminal is
+      // what arms it, so the sidebar shows the host's files.
+      void useRemoteBrowserStore.getState().open(profile);
+    },
+    [newRemoteTab],
+  );
+
+  const activeRemoteWorkspace = useRemoteWorkspaceStore((s) => s.active);
+  const openRemoteWorkspace = useCallback(
+    (profile: RemoteProfile) => {
+      void (async () => {
+        const opened = await useRemoteWorkspaceStore.getState().open(profile);
+        if (!opened) {
+          const error = useRemoteWorkspaceStore.getState().error;
+          if (error && !error.includes("cancelled")) {
+            toast.error(`Could not open ${profile.name || profile.host}`, {
+              description: error,
+            });
+          }
+          return;
+        }
+        await handleWorkspaceChange({
+          kind: "ssh",
+          conn: opened.conn,
+          profileId: opened.profileId,
+        });
+      })();
+    },
+    [handleWorkspaceChange],
+  );
+
+  /**
+   * Editors read and write through the active workspace, so a remote file can
+   * only be edited once the workspace points at its host. Opening one adopts
+   * that workspace (without resetting tabs) rather than failing quietly.
+   */
+  const openRemoteFile = useCallback(
+    (path: string) => {
+      void (async () => {
+        const browser = useRemoteBrowserStore.getState();
+        const profile = browser.profileId
+          ? useRemotesStore
+              .getState()
+              .profiles.find((p) => p.id === browser.profileId)
+          : undefined;
+        if (!profile) return;
+
+        const active = useRemoteWorkspaceStore.getState().active;
+        if (active?.profileId !== profile.id) {
+          const opened = await useRemoteWorkspaceStore
+            .getState()
+            .open(profile);
+          if (!opened) {
+            toast.error(`Could not open ${profile.name || profile.host}`, {
+              description:
+                useRemoteWorkspaceStore.getState().error ?? undefined,
+            });
+            return;
+          }
+          await adoptWorkspaceEnv({
+            kind: "ssh",
+            conn: opened.conn,
+            profileId: opened.profileId,
+          });
+        }
+
+        // Saving is confined to the roots the connection has been given.
+        const conn = useRemoteWorkspaceStore.getState().active?.conn;
+        const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+        if (conn != null) {
+          await invoke("remote_authorize", { conn, path: dir }).catch(
+            () => undefined,
+          );
+        }
+        handleOpenFile(path, true);
+      })();
+    },
+    [adoptWorkspaceEnv, handleOpenFile],
+  );
+
+  const runInActiveTerminal = useCallback(
+    (line: string) => {
+      if (activeTab?.kind !== "terminal") return;
+      const handle = terminalRefs.current.get(activeTab.activeLeafId);
+      if (!handle) return;
+      handle.write(`${line}\r`);
+      handle.focus();
+    },
+    [activeTab],
+  );
+
+  const remoteCommandTargets = useMemo(
+    () =>
+      remoteProfiles.map((p) => ({
+        id: p.id,
+        label: profileLabel(p),
+        address: profileAddress(p),
+      })),
+    [remoteProfiles],
+  );
+
+  const connectRemoteById = useCallback(
+    (id: string) => {
+      const profile = remoteProfiles.find((p) => p.id === id);
+      if (profile) connectToRemote(profile);
+    },
+    [remoteProfiles, connectToRemote],
+  );
+  // ---- end fork-only ------------------------------------------------------
 
   const openLaunchFiles = useCallback(
     (paths: string[]) => {
@@ -1092,6 +1245,13 @@ export default function App() {
   const handleTerminalCwd = useCallback(
     (leafId: number, cwd: string) => {
       setLeafCwd(leafId, cwd);
+      // Fork-only (SSH port): a remote pane reports a path on another machine;
+      // authorizing it locally could open up an unrelated local directory.
+      const remote = tabsRef.current.some(
+        (t) =>
+          t.kind === "terminal" && !!t.remoteId && hasLeaf(t.paneTree, leafId),
+      );
+      if (remote) return;
       if (cwd && !authorizedCwds.current.has(cwd)) {
         authorizedCwds.current.add(cwd);
         native.workspaceAuthorize(cwd).catch(() => {
@@ -1286,6 +1446,9 @@ export default function App() {
             openSpacesOverview: () => setSwitcherOpen(true),
             newSpace: () => void handleNewSpace(),
             switchSpace: (id) => useSpaces.getState().setActive(id),
+            remotes: remoteCommandTargets,
+            connectRemote: connectRemoteById,
+            openRemotes: () => openSidebarView("remotes"),
           })
         : [],
     [
@@ -1309,6 +1472,9 @@ export default function App() {
       askFromSelection,
       activeSpaceId,
       handleNewSpace,
+      remoteCommandTargets,
+      connectRemoteById,
+      openSidebarView,
     ],
   );
 
@@ -1477,7 +1643,30 @@ export default function App() {
                       key={sidebarView}
                       className="min-h-0 flex-1 terax-panel-in"
                     >
-                      {sidebarView === "explorer" ? (
+                      {sidebarView === "remotes" ? (
+                        <RemotesPanel
+                          onConnect={connectToRemote}
+                          onOpenWorkspace={openRemoteWorkspace}
+                          onOpenFile={openRemoteFile}
+                          onRunInTerminal={runInActiveTerminal}
+                          activeTerminalRemoteId={
+                            activeTab?.kind === "terminal"
+                              ? activeTab.remoteId
+                              : undefined
+                          }
+                          activeTerminalCwd={
+                            activeTab?.kind === "terminal"
+                              ? activeTab.cwd
+                              : undefined
+                          }
+                          activeWorkspaceId={
+                            activeRemoteWorkspace?.profileId ?? null
+                          }
+                          activeWorkspaceConn={
+                            activeRemoteWorkspace?.conn ?? null
+                          }
+                        />
+                      ) : sidebarView === "explorer" ? (
                         <FileExplorer
                           ref={explorerRef}
                           rootPath={explorerRoot}
@@ -1593,6 +1782,7 @@ export default function App() {
             activeId={activeId}
             onActivate={onActivateAgent}
           />
+          <RemotePrompts />
           <Toaster position="bottom-right" />
 
           {hasComposer ? (

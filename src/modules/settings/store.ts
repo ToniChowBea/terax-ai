@@ -29,7 +29,26 @@ export const DEFAULT_THEME_ID = "terax-default";
 
 export type BackgroundKind = "none" | "image";
 
-export type TerminalCursorStyle = "bar" | "block" | "underline";
+export const TERMINAL_CURSOR_STYLES = ["bar", "block", "underline"] as const;
+
+export type TerminalCursorStyle = (typeof TERMINAL_CURSOR_STYLES)[number];
+
+/** Fork-only (SSH port): file and folder iconography for the remote browser. */
+export const REMOTE_ICON_SETS = [
+  "plain",
+  "catppuccin",
+  "material",
+  "vscode",
+] as const;
+
+export type RemoteIconSet = (typeof REMOTE_ICON_SETS)[number];
+
+export const REMOTE_ICON_SET_LABELS: Record<RemoteIconSet, string> = {
+  plain: "Plain",
+  catppuccin: "Catppuccin",
+  material: "Material",
+  vscode: "VS Code",
+};
 
 export const EDITOR_THEMES = [
   "kanagawa",
@@ -122,6 +141,10 @@ export type Preferences = {
   theme: ThemePref;
   themeId: string;
   backgroundKind: BackgroundKind;
+  /** Fork-only (SSH port). */
+  remoteIconSet: RemoteIconSet;
+  /** Fork-only (SSH port): the remote file browser follows the terminal cwd. */
+  remoteFollowTerminal: boolean;
   backgroundImageId: string | null;
   backgroundOpacity: number;
   backgroundBlur: number;
@@ -215,6 +238,8 @@ const STORE_PATH = "terax-settings.json";
 const KEY_THEME = "theme";
 const KEY_THEME_ID = "themeId";
 const KEY_BG_KIND = "backgroundKind";
+const KEY_REMOTE_ICON_SET = "remoteIconSet";
+const KEY_REMOTE_FOLLOW_TERMINAL = "remoteFollowTerminal";
 const KEY_BG_IMAGE_ID = "backgroundImageId";
 const KEY_BG_OPACITY = "backgroundOpacity";
 const KEY_BG_BLUR = "backgroundBlur";
@@ -310,6 +335,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
   themeId: DEFAULT_THEME_ID,
   backgroundKind: "none",
+  remoteIconSet: "catppuccin",
+  remoteFollowTerminal: true,
   backgroundImageId: null,
   backgroundOpacity: 0.5,
   backgroundBlur: 0,
@@ -401,6 +428,10 @@ export async function loadPreferences(): Promise<Preferences> {
     themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
     backgroundKind:
       get<BackgroundKind>(KEY_BG_KIND) ?? DEFAULT_PREFERENCES.backgroundKind,
+    remoteIconSet: coerceRemoteIconSet(get<string>(KEY_REMOTE_ICON_SET)),
+    remoteFollowTerminal:
+      get<boolean>(KEY_REMOTE_FOLLOW_TERMINAL) ??
+      DEFAULT_PREFERENCES.remoteFollowTerminal,
     backgroundImageId:
       get<string | null>(KEY_BG_IMAGE_ID) ??
       DEFAULT_PREFERENCES.backgroundImageId,
@@ -621,6 +652,20 @@ function clampBgOpacity(v: number): number {
 function clampBlur(v: number): number {
   if (!Number.isFinite(v)) return 16;
   return Math.min(64, Math.max(0, Math.round(v)));
+}
+
+function coerceRemoteIconSet(value: string | undefined): RemoteIconSet {
+  return REMOTE_ICON_SETS.includes(value as RemoteIconSet)
+    ? (value as RemoteIconSet)
+    : DEFAULT_PREFERENCES.remoteIconSet;
+}
+
+export async function setRemoteIconSet(value: RemoteIconSet): Promise<void> {
+  await writePref(KEY_REMOTE_ICON_SET, value);
+}
+
+export async function setRemoteFollowTerminal(value: boolean): Promise<void> {
+  await writePref(KEY_REMOTE_FOLLOW_TERMINAL, value);
 }
 
 export async function setBackgroundKind(value: BackgroundKind): Promise<void> {
@@ -963,6 +1008,8 @@ export async function onPreferencesChange(
     [KEY_THEME]: "theme",
     [KEY_THEME_ID]: "themeId",
     [KEY_BG_KIND]: "backgroundKind",
+    [KEY_REMOTE_ICON_SET]: "remoteIconSet",
+    [KEY_REMOTE_FOLLOW_TERMINAL]: "remoteFollowTerminal",
     [KEY_BG_IMAGE_ID]: "backgroundImageId",
     [KEY_BG_OPACITY]: "backgroundOpacity",
     [KEY_BG_BLUR]: "backgroundBlur",

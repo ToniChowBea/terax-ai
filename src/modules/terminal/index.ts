@@ -26,3 +26,17 @@ export {
 } from "./lib/useTerminalFileDrop";
 export type { TerminalPaneHandle } from "./TerminalPane";
 export { TerminalStack } from "./TerminalStack";
+
+// Fork-only (SSH port). Per-host appearance and background types are exported
+// so remote profiles can store them; they are not yet applied by the Ghostty
+// renderer (see SSH_PORT_NOTES.md).
+export {
+  pruneAppearance,
+  resolveAppearance,
+  type TerminalAppearance,
+  type TerminalAppearanceOverride,
+} from "./lib/appearanceOverride";
+export type { PtySession } from "./lib/pty-bridge";
+export { registerRemoteOpener } from "./lib/remoteOpener";
+export type { TerminalBackground } from "./lib/terminalBackground";
+export { useTerminalFont } from "./lib/useTerminalFont";

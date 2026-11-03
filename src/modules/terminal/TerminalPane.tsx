@@ -36,6 +36,8 @@ export type TerminalPaneProps = {
   initialCwd?: string;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
+  /** Fork-only (SSH port): remote profile id when this pane is an SSH session. */
+  remoteId?: string;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
   onExit?: (leafId: number, code: number) => void;
   onCwd?: (leafId: number, cwd: string) => void;
@@ -59,6 +61,7 @@ const GhosttyTerminalPane = memo(
       focused = true,
       initialCwd,
       blocks = false,
+      remoteId,
       onSearchReady,
       onExit,
       onCwd,
@@ -80,6 +83,7 @@ const GhosttyTerminalPane = memo(
       focused,
       initialCwd,
       blocks,
+      remoteId,
       onSearchReady: (search) => onSearchReady?.(leafId, search),
       onExit: (code) => onExit?.(leafId, code),
       onCwd: (cwd) => onCwd?.(leafId, cwd),

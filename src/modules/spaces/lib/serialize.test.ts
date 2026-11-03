@@ -72,6 +72,11 @@ describe("serializeTabs", () => {
       expect(node.tree.children[0]).not.toHaveProperty("active");
     }
   });
+
+  it("drops remote terminals, which cannot survive the process", () => {
+    expect(serializeTabs([term({ remoteId: "h1" })])).toHaveLength(0);
+    expect(serializeTabs([term({})])).toHaveLength(1);
+  });
 });
 
 describe("hydrateTabs", () => {

@@ -26,8 +26,14 @@ if (__TERAX_BENCH__) {
   await installBenchEarly();
 }
 
-// Reap PTY sessions orphaned by a prior webview load before any tab spawns.
-await invoke("pty_close_all").catch(() => {});
+// Fork-only (SSH port): also reap SSH sessions, remote workspaces and
+// tunnels orphaned by a prior webview load.
+await Promise.all([
+  invoke("pty_close_all").catch(() => {}),
+  invoke("ssh_close_all").catch(() => {}),
+  invoke("remote_close_all").catch(() => {}),
+  invoke("tunnel_close_all").catch(() => {}),
+]);
 
 // Seed before first paint so default tab mounts at target cwd (no flicker).
 await initLaunchDir();

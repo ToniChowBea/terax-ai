@@ -17,6 +17,7 @@ import type { TerminalSearchController } from "@/modules/terminal/search/Termina
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPty, type PtySession } from "../lib/pty-bridge";
+import { openRemoteSession } from "../lib/remoteOpener";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
 import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
@@ -62,6 +63,10 @@ type Callbacks = {
 type GhosttySession = {
   readonly leafId: number;
   readonly backend: GhosttyBackend;
+  /** Fork-only (SSH port): remote profile id when this leaf is an SSH session. */
+  readonly remoteId?: string;
+  /** Fork-only (SSH port): OSC 133 says a command is running (remote close guard). */
+  commandRunning?: boolean;
   initialCwd: string | undefined;
   lastCwd: string | null;
   model: GhosttyTerminalModelApi | null;
@@ -110,6 +115,8 @@ type Options = {
   focused: boolean;
   initialCwd?: string;
   blocks?: boolean;
+  /** Fork-only (SSH port): remote profile id when this leaf is an SSH session. */
+  remoteId?: string;
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
   onSearchReady?: (search: TerminalSearchController) => void;
@@ -123,6 +130,7 @@ export function useGhosttyTerminalSession({
   focused,
   initialCwd,
   blocks = false,
+  remoteId,
   onSearchReady,
   onExit,
   onCwd,
@@ -156,6 +164,7 @@ export function useGhosttyTerminalSession({
       backend,
       initialCwdRef.current,
       fontRef.current,
+      remoteId,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -181,7 +190,7 @@ export function useGhosttyTerminalSession({
         session.callbacks = {};
       }
     };
-  }, [leafId, backend, container, blocks]);
+  }, [leafId, backend, container, blocks, remoteId]);
 
   useEffect(() => {
     const session = sessions.get(leafId);
@@ -364,13 +373,17 @@ export async function whenGhosttySessionReady(
   );
 }
 
+// SSH session ids and PTY ids come from independent counters, so a remote
+// leaf must never be correlated with a PTY id (fork-only, SSH port).
 export function ghosttyPtyIdForLeaf(leafId: number): number | null {
-  return sessions.get(leafId)?.pty?.id ?? null;
+  const session = sessions.get(leafId);
+  if (!session || session.remoteId) return null;
+  return session.pty?.id ?? null;
 }
 
 export function ghosttyLeafIdForPty(ptyId: number): number | null {
   for (const [leafId, session] of sessions) {
-    if (session.pty?.id === ptyId) return leafId;
+    if (!session.remoteId && session.pty?.id === ptyId) return leafId;
   }
   return null;
 }
@@ -380,6 +393,10 @@ export async function ghosttyLeafHasForegroundProcess(
 ): Promise<boolean> {
   const session = sessions.get(leafId);
   if (!session?.pty || session.shellExited) return false;
+  // An SSH id is not a PTY id, and there is no remote tcgetpgrp. Use the
+  // OSC 133 command boundary instead: accurate when the remote shell emits
+  // it, quiet when it does not (as a local shell without integration is).
+  if (session.remoteId) return !!session.commandRunning;
   try {
     return await invoke<boolean>("pty_has_foreground_process", {
       id: session.pty.id,
@@ -515,6 +532,7 @@ function ensureSession(
   backend: GhosttyBackend,
   initialCwd?: string,
   font?: TerminalFontSpec,
+  remoteId?: string,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -534,6 +552,7 @@ function ensureSession(
   const session: GhosttySession = {
     leafId,
     backend,
+    remoteId,
     initialCwd,
     lastCwd: null,
     model: null,
@@ -653,6 +672,7 @@ async function initializeSessionGeneration(
       );
     },
     onCommandState: (running) => {
+      session.commandRunning = running;
       if (!running) mark("firstPromptMs");
     },
   });
@@ -796,30 +816,35 @@ async function initializeSessionGeneration(
 
   const startCols = model.cols;
   const startRows = model.rows;
-  const pty = await openPty(
-    startCols,
-    startRows,
-    {
-      onData: (bytes) => {
-        if (!session.disposed && generation === session.generation) {
-          mark("firstOutputMs");
-          model.write(bytes);
-          ghosttyBlocks(session.leafId)?.changed();
-        }
-      },
-      onExit: (code) => {
-        if (session.disposed || generation !== session.generation) return;
-        session.shellExited = true;
-        session.writer.detach();
-        session.pty = null;
-        session.callbacks.onExit?.(code);
-      },
+  const ptyHandlers = {
+    onData: (bytes: Uint8Array) => {
+      if (!session.disposed && generation === session.generation) {
+        mark("firstOutputMs");
+        model.write(bytes);
+        ghosttyBlocks(session.leafId)?.changed();
+      }
     },
-    session.initialCwd,
-    !!ghosttyBlocks(session.leafId),
-    preferences.terminalShell || undefined,
-    session.leafId,
-  );
+    onExit: (code: number) => {
+      if (session.disposed || generation !== session.generation) return;
+      session.shellExited = true;
+      session.writer.detach();
+      session.pty = null;
+      session.callbacks.onExit?.(code);
+    },
+  };
+  // Fork-only (SSH port): a remote leaf is driven by an SSH channel shaped
+  // like a PTY session; everything below treats both the same.
+  const pty = session.remoteId
+    ? await openRemoteSession(session.remoteId, startCols, startRows, ptyHandlers)
+    : await openPty(
+        startCols,
+        startRows,
+        ptyHandlers,
+        session.initialCwd,
+        !!ghosttyBlocks(session.leafId),
+        preferences.terminalShell || undefined,
+        session.leafId,
+      );
   if (session.disposed || generation !== session.generation) {
     await pty.close();
     return;

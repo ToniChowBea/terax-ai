@@ -48,6 +48,8 @@ export type TerminalTab = TabBase & {
   private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
+  /** Fork-only (SSH port): remote profile id when this tab holds SSH sessions. */
+  remoteId?: string;
 };
 
 export type EditorTab = TabBase & {
@@ -798,6 +800,32 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setActiveId, setTabs],
   );
 
+  /** Fork-only (SSH port): a terminal tab whose panes are SSH sessions. */
+  const newRemoteTab = useCallback(
+    (remoteId: string, title: string) => {
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((t) => [
+        ...t,
+        {
+          id: tabId,
+          kind: "terminal",
+          spaceId: activeSpaceIdRef.current,
+          title,
+          // The cwd is remote; the profile's own directory is applied by the
+          // connect path instead of inheriting a local one.
+          paneTree: { kind: "leaf", id: leafId },
+          activeLeafId: leafId,
+          remoteId,
+          customTitle: title,
+        },
+      ]);
+      setActiveId(tabId);
+      return tabId;
+    },
+    [setActiveId, setTabs],
+  );
+
   useEffect(() => {
     if (!import.meta.env?.DEV || typeof window === "undefined") return;
     (
@@ -1502,6 +1530,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setOverrideLanguage,
     newTab,
     newBlockTab,
+    newRemoteTab,
     newAgentTab,
     newAgentGroupTab,
     newPrivateTab,

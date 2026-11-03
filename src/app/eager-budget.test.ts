@@ -65,4 +65,24 @@ describe("startup bundle budget", () => {
   it("settings window does not eagerly pull editor/AI/markdown stacks", () => {
     expect(heavyEagerHits("src/settings/main.tsx")).toEqual([]);
   });
+
+  // Fork-only (SSH port): the remotes panel and its dialogs stay lazy.
+  it("keeps the remotes UI out of the main window eager graph", () => {
+    const lazySurfaces = [
+      "src/modules/remotes/RemotesPanel.tsx",
+      "src/modules/remotes/HostDialog.tsx",
+      "src/modules/remotes/TransferDialog.tsx",
+      "src/modules/remotes/lib/transfer.ts",
+      "src/modules/remotes/RemotePrompts.tsx",
+    ];
+    const { files } = traceEager("src/main.tsx");
+    const eager = [...files].map((f) => f.replace(/\\/g, "/"));
+    // Sanity: the trace does reach the eager half of the module.
+    expect(
+      eager.some((f) => f.endsWith("src/modules/remotes/lib/opener.ts")),
+    ).toBe(true);
+    expect(
+      lazySurfaces.filter((s) => eager.some((f) => f.endsWith(s))),
+    ).toEqual([]);
+  });
 });
