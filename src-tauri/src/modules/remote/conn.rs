@@ -78,11 +78,7 @@ impl RemoteConn {
         let conn = pool::acquire_scoped(scope, target, bus).await?;
         let resolved = conn.resolved.clone();
 
-        let channel = conn
-            .handle()
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("could not open a channel: {e}"))?;
+        let channel = pool::open_session_channel(conn.handle()).await?;
         channel
             .request_subsystem(true, "sftp")
             .await
@@ -146,11 +142,7 @@ impl RemoteConn {
     }
 
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, String> {
-        let mut channel = self
-            .handle()
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("could not open a channel: {e}"))?;
+        let mut channel = crate::modules::ssh::pool::open_session_channel(self.handle()).await?;
         channel
             .exec(true, command)
             .await

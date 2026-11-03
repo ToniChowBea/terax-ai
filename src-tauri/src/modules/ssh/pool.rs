@@ -175,6 +175,36 @@ pub async fn acquire_scoped(
     Ok(conn)
 }
 
+/// Open a session channel on a shared connection, riding out a full one.
+///
+/// Every consumer of a host now shares one transport, and OpenSSH caps the
+/// channels open on a connection (`MaxSessions`, 10 by default). Exec
+/// channels are short-lived, so a refusal is usually momentary: retry with
+/// backoff for a couple of seconds before giving up with a message that
+/// names the real cause.
+pub async fn open_session_channel(
+    handle: &client::Handle<Handler>,
+) -> Result<russh::Channel<client::Msg>, String> {
+    let mut delay = std::time::Duration::from_millis(25);
+    let mut last = String::new();
+    for _ in 0..8 {
+        match handle.channel_open_session().await {
+            Ok(channel) => return Ok(channel),
+            Err(russh::Error::ChannelOpenFailure(reason)) => {
+                last = format!("{reason:?}");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_millis(500));
+            }
+            Err(e) => return Err(format!("could not open a channel: {e}")),
+        }
+    }
+    Err(format!(
+        "the server refused another channel on this connection ({last}); it \
+         is probably at its MaxSessions limit (10 by default in OpenSSH). \
+         Close a tab to this host or raise MaxSessions in sshd_config"
+    ))
+}
+
 /// Handshakes completed for this destination since the process started.
 pub fn connects_for(key: &str) -> u64 {
     pool()

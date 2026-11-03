@@ -715,11 +715,7 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
     let resolved = conn.resolved.clone();
 
     bus.emit(SshEvent::Phase { phase: "opening" });
-    let channel = conn
-        .handle()
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("could not open session channel: {e}"))?;
+    let channel = super::pool::open_session_channel(conn.handle()).await?;
 
     for (name, value) in &target.env {
         // Servers reject anything outside AcceptEnv; that is routine, not fatal.
