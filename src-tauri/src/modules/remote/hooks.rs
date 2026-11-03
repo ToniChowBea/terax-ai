@@ -56,12 +56,22 @@ macro_rules! remote {
     }};
 }
 
-pub async fn read_dir(ws: &Option<WorkspaceEnv>, dir: &str, show_hidden: bool) -> Hook<Vec<DirEntry>> {
-    remote!(ws, |c| fs::read_dir(&c, &resolve(&c, dir), show_hidden).await)
+pub async fn read_dir(
+    ws: &Option<WorkspaceEnv>,
+    dir: &str,
+    show_hidden: bool,
+) -> Hook<Vec<DirEntry>> {
+    remote!(ws, |c| fs::read_dir(&c, &resolve(&c, dir), show_hidden)
+        .await)
 }
 
-pub async fn list_subdirs(ws: &Option<WorkspaceEnv>, dir: &str, show_hidden: bool) -> Hook<Vec<String>> {
-    remote!(ws, |c| fs::list_subdirs(&c, &resolve(&c, dir), show_hidden).await)
+pub async fn list_subdirs(
+    ws: &Option<WorkspaceEnv>,
+    dir: &str,
+    show_hidden: bool,
+) -> Hook<Vec<String>> {
+    remote!(ws, |c| fs::list_subdirs(&c, &resolve(&c, dir), show_hidden)
+        .await)
 }
 
 pub async fn read_file(ws: &Option<WorkspaceEnv>, file: &str, force: bool) -> Hook<ReadResult> {
@@ -155,7 +165,10 @@ pub async fn move_path(
 /// One `rm` for the whole batch: a round trip per entry would make deleting a
 /// selection unusably slow over a link with any latency. Never fails; outcomes
 /// are reported in the counts like the local command.
-pub async fn delete_batch(ws: &Option<WorkspaceEnv>, paths: &[String]) -> Option<FsDeleteBatchResult> {
+pub async fn delete_batch(
+    ws: &Option<WorkspaceEnv>,
+    paths: &[String],
+) -> Option<FsDeleteBatchResult> {
     let conn = conn_id(ws)?;
     let all_failed = || FsDeleteBatchResult::new(Vec::new(), paths.len());
     let Ok(c) = require(conn) else {
@@ -177,7 +190,9 @@ pub async fn delete_batch(ws: &Option<WorkspaceEnv>, paths: &[String]) -> Option
     }
     let targets: Vec<String> = resolved.iter().map(|(_, t)| t.clone()).collect();
     Some(match fs::delete(&c, &targets).await {
-        Ok(()) => FsDeleteBatchResult::new(resolved.into_iter().map(|(o, _)| o).collect(), rejected),
+        Ok(()) => {
+            FsDeleteBatchResult::new(resolved.into_iter().map(|(o, _)| o).collect(), rejected)
+        }
         Err(e) => {
             log::warn!("fs_delete_batch remote failed: {e}");
             all_failed()
@@ -187,7 +202,11 @@ pub async fn delete_batch(ws: &Option<WorkspaceEnv>, paths: &[String]) -> Option
 
 /// Drag-and-drop onto a remote workspace: sources are local paths, so this is
 /// an upload rather than a server-side copy. Refuses to overwrite.
-pub async fn copy(ws: &Option<WorkspaceEnv>, sources: &[String], dest_dir: &str) -> Hook<CopyResult> {
+pub async fn copy(
+    ws: &Option<WorkspaceEnv>,
+    sources: &[String],
+    dest_dir: &str,
+) -> Hook<CopyResult> {
     remote!(ws, |c| {
         let dest = resolve(&c, dest_dir);
         c.authorize_mutation(&dest)?;
@@ -221,11 +240,29 @@ pub async fn grep(
     max_results: usize,
     case_sensitive: bool,
 ) -> Hook<GrepResponse> {
-    remote!(ws, |c| exec::grep(&c, &resolve(&c, root), pattern, max_results, case_sensitive).await)
+    remote!(ws, |c| exec::grep(
+        &c,
+        &resolve(&c, root),
+        pattern,
+        max_results,
+        case_sensitive
+    )
+    .await)
 }
 
-pub async fn glob(ws: &Option<WorkspaceEnv>, root: &str, pattern: &str, max_results: usize) -> Hook<GlobResponse> {
-    remote!(ws, |c| exec::glob(&c, &resolve(&c, root), pattern, max_results).await)
+pub async fn glob(
+    ws: &Option<WorkspaceEnv>,
+    root: &str,
+    pattern: &str,
+    max_results: usize,
+) -> Hook<GlobResponse> {
+    remote!(ws, |c| exec::glob(
+        &c,
+        &resolve(&c, root),
+        pattern,
+        max_results
+    )
+    .await)
 }
 
 pub async fn search(
@@ -235,7 +272,14 @@ pub async fn search(
     limit: usize,
     show_hidden: bool,
 ) -> Hook<SearchResult> {
-    remote!(ws, |c| exec::search(&c, &resolve(&c, root), query, limit, show_hidden).await)
+    remote!(ws, |c| exec::search(
+        &c,
+        &resolve(&c, root),
+        query,
+        limit,
+        show_hidden
+    )
+    .await)
 }
 
 pub async fn list_files(
@@ -245,7 +289,14 @@ pub async fn list_files(
     max_depth: usize,
     show_hidden: bool,
 ) -> Hook<ListFilesResult> {
-    remote!(ws, |c| exec::list_files(&c, &resolve(&c, root), limit, Some(max_depth), show_hidden).await)
+    remote!(ws, |c| exec::list_files(
+        &c,
+        &resolve(&c, root),
+        limit,
+        Some(max_depth),
+        show_hidden
+    )
+    .await)
 }
 
 /// SFTP has no change notification; watching a remote workspace is simply

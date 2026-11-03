@@ -86,7 +86,9 @@ live!(reads_a_directory_and_hides_dotfiles, c, e, {
         "dotfiles must be hidden: {names:?}"
     );
 
-    let all = fs::read_dir(&c, &e.root, true).await.expect("read_dir hidden");
+    let all = fs::read_dir(&c, &e.root, true)
+        .await
+        .expect("read_dir hidden");
     assert!(
         all.iter().any(|x| x.name.starts_with('.')),
         "show_hidden must include dotfiles"
@@ -95,8 +97,12 @@ live!(reads_a_directory_and_hides_dotfiles, c, e, {
 
 live!(directories_sort_before_files, c, e, {
     let entries = fs::read_dir(&c, &e.root, false).await.expect("read_dir");
-    let first_file = entries.iter().position(|x| !matches!(x.kind, terax_lib::modules::fs::tree::EntryKind::Dir));
-    let last_dir = entries.iter().rposition(|x| matches!(x.kind, terax_lib::modules::fs::tree::EntryKind::Dir));
+    let first_file = entries
+        .iter()
+        .position(|x| !matches!(x.kind, terax_lib::modules::fs::tree::EntryKind::Dir));
+    let last_dir = entries
+        .iter()
+        .rposition(|x| matches!(x.kind, terax_lib::modules::fs::tree::EntryKind::Dir));
     if let (Some(f), Some(d)) = (first_file, last_dir) {
         assert!(d < f, "directories must come first");
     }
@@ -116,12 +122,16 @@ live!(round_trips_a_file, c, e, {
     }
 
     // The editor's conflict check depends on mtime moving.
-    fs::write_file(&c, &target, "second\n").await.expect("rewrite");
+    fs::write_file(&c, &target, "second\n")
+        .await
+        .expect("rewrite");
     let stat = fs::stat(&c, &target).await.expect("stat");
     assert!(stat.mtime > 0, "mtime must be reported");
     assert_eq!(stat.size, 7);
 
-    fs::delete(&c, std::slice::from_ref(&target)).await.expect("delete");
+    fs::delete(&c, std::slice::from_ref(&target))
+        .await
+        .expect("delete");
 });
 
 live!(overwriting_with_shorter_content_truncates, c, e, {
@@ -129,8 +139,12 @@ live!(overwriting_with_shorter_content_truncates, c, e, {
     // Saving a shortened file in the editor would otherwise silently corrupt it.
     c.authorize_root(&e.root);
     let target = path::join(&e.root, "terax_truncate.txt");
-    fs::write_file(&c, &target, "aaaaaaaaaaaaaaaaaaaa\n").await.expect("write long");
-    fs::write_file(&c, &target, "bb\n").await.expect("write short");
+    fs::write_file(&c, &target, "aaaaaaaaaaaaaaaaaaaa\n")
+        .await
+        .expect("write long");
+    fs::write_file(&c, &target, "bb\n")
+        .await
+        .expect("write short");
 
     let read = fs::read_file(&c, &target, false).await.expect("read");
     match read {
@@ -140,16 +154,22 @@ live!(overwriting_with_shorter_content_truncates, c, e, {
         }
         _ => panic!("expected text"),
     }
-    fs::delete(&c, std::slice::from_ref(&target)).await.expect("delete");
+    fs::delete(&c, std::slice::from_ref(&target))
+        .await
+        .expect("delete");
 });
 
 live!(creates_a_file_that_does_not_exist_yet, c, e, {
     c.authorize_root(&e.root);
     let target = path::join(&e.root, "terax_new_file.txt");
     let _ = fs::delete(&c, std::slice::from_ref(&target)).await;
-    fs::write_file(&c, &target, "fresh\n").await.expect("write to a new path");
+    fs::write_file(&c, &target, "fresh\n")
+        .await
+        .expect("write to a new path");
     assert!(fs::stat(&c, &target).await.is_ok());
-    fs::delete(&c, std::slice::from_ref(&target)).await.expect("delete");
+    fs::delete(&c, std::slice::from_ref(&target))
+        .await
+        .expect("delete");
 });
 
 live!(create_rename_and_delete, c, e, {
@@ -166,7 +186,9 @@ live!(create_rename_and_delete, c, e, {
     fs::rename(&c, &a, &b).await.expect("rename");
     assert!(fs::stat(&c, &b).await.is_ok());
     assert!(fs::stat(&c, &a).await.is_err());
-    fs::delete(&c, std::slice::from_ref(&b)).await.expect("delete");
+    fs::delete(&c, std::slice::from_ref(&b))
+        .await
+        .expect("delete");
 });
 
 live!(mutations_outside_the_root_are_refused, c, e, {
@@ -177,13 +199,16 @@ live!(mutations_outside_the_root_are_refused, c, e, {
         "a path outside the workspace must be refused"
     );
     assert!(
-        c.authorize_mutation(&format!("{}/../../etc/passwd", e.root)).is_err(),
+        c.authorize_mutation(&format!("{}/../../etc/passwd", e.root))
+            .is_err(),
         "dot-dot must not escape the workspace"
     );
 });
 
 live!(searches_by_filename, c, e, {
-    let res = exec::search(&c, &e.root, "main", 50, false).await.expect("search");
+    let res = exec::search(&c, &e.root, "main", 50, false)
+        .await
+        .expect("search");
     assert!(
         res.hits.iter().any(|h| h.name == "main.rs"),
         "expected main.rs in {:?}",
@@ -194,7 +219,9 @@ live!(searches_by_filename, c, e, {
 });
 
 live!(greps_file_contents, c, e, {
-    let res = exec::grep(&c, &e.root, "hello world", 50, true).await.expect("grep");
+    let res = exec::grep(&c, &e.root, "hello world", 50, true)
+        .await
+        .expect("grep");
     assert!(!res.hits.is_empty(), "expected a match");
     let hit = &res.hits[0];
     assert!(hit.rel.ends_with("main.rs"), "got {}", hit.rel);
@@ -204,7 +231,9 @@ live!(greps_file_contents, c, e, {
 
 live!(greps_a_path_containing_a_colon, c, e, {
     // A colon is legal in a POSIX filename and would break naive splitting.
-    let res = exec::grep(&c, &e.root, "hello there", 50, true).await.expect("grep");
+    let res = exec::grep(&c, &e.root, "hello there", 50, true)
+        .await
+        .expect("grep");
     assert!(
         res.hits.iter().any(|h| h.rel.contains("we:ird")),
         "expected the colon-named file, got {:?}",
@@ -213,7 +242,9 @@ live!(greps_a_path_containing_a_colon, c, e, {
 });
 
 live!(lists_files_and_prunes_dot_git, c, e, {
-    let res = exec::list_files(&c, &e.root, 500, Some(8), false).await.expect("list");
+    let res = exec::list_files(&c, &e.root, 500, Some(8), false)
+        .await
+        .expect("list");
     assert!(res.files.iter().any(|f| f.ends_with("src/main.rs")));
     assert!(
         !res.files.iter().any(|f| f.contains("/.git/")),
@@ -314,7 +345,9 @@ fn connects_through_a_jump_host() {
         assert_eq!(out.stdout_text().trim(), "behind the bastion");
 
         // And SFTP works over the tunnel, not just exec.
-        let entries = fs::read_dir(&c, "/config/inner", false).await.expect("read_dir");
+        let entries = fs::read_dir(&c, "/config/inner", false)
+            .await
+            .expect("read_dir");
         assert!(entries.iter().any(|x| x.name == "secret.txt"));
     });
 }
@@ -378,14 +411,10 @@ live!(forwards_a_local_port_to_the_remote_loopback, c, _e, {
         remote_port,
     };
 
-    let info = terax_lib::modules::remote::forward::open_local(
-        &tunnels,
-        1,
-        std::sync::Arc::new(c),
-        &spec,
-    )
-    .await
-    .expect("open forward");
+    let info =
+        terax_lib::modules::remote::forward::open_local(&tunnels, 1, std::sync::Arc::new(c), &spec)
+            .await
+            .expect("open forward");
 
     assert_eq!(info.bind_address, "127.0.0.1", "must default to loopback");
     assert_ne!(info.local_port, 0, "the bound port must be reported back");
@@ -396,7 +425,9 @@ live!(forwards_a_local_port_to_the_remote_loopback, c, _e, {
     let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", info.local_port))
         .await
         .expect("connect through the forward");
-    sock.write_all(b"GET / HTTP/1.0\r\n\r\n").await.expect("write");
+    sock.write_all(b"GET / HTTP/1.0\r\n\r\n")
+        .await
+        .expect("write");
     // Read until the marker appears rather than to EOF: the remote service
     // holds the connection open, so waiting for EOF would always time out.
     let mut buf = Vec::new();
@@ -454,7 +485,10 @@ live!(a_forward_needs_a_remote_host_and_port, c, _e, {
             .await
             .is_err()
     );
-    assert!(tunnels.list().is_empty(), "a rejected spec must not register");
+    assert!(
+        tunnels.list().is_empty(),
+        "a rejected spec must not register"
+    );
 });
 
 // --- Remote git -----------------------------------------------------------
@@ -486,10 +520,7 @@ live!(resolves_and_reports_status_for_a_remote_repo, c, e, {
     let conn = state.insert_for_test(std::sync::Arc::new(c));
     let workspace = WorkspaceEnv::Ssh { conn };
 
-    state
-        .get(conn)
-        .unwrap()
-        .authorize_root(&e.root);
+    state.get(conn).unwrap().authorize_root(&e.root);
 
     // run_git blocks while it waits, exactly as the local path does when it
     // waits on a child process. In the app it runs on Tauri's blocking path;
@@ -522,9 +553,16 @@ live!(resolves_and_reports_status_for_a_remote_repo, c, e, {
     .unwrap()
     .expect("git status on the remote");
     assert!(
-        status.changed_files.iter().any(|entry| entry.path.ends_with("lib.rs")),
+        status
+            .changed_files
+            .iter()
+            .any(|entry| entry.path.ends_with("lib.rs")),
         "expected the modified file in {:?}",
-        status.changed_files.iter().map(|x| &x.path).collect::<Vec<_>>()
+        status
+            .changed_files
+            .iter()
+            .map(|x| &x.path)
+            .collect::<Vec<_>>()
     );
 });
 
@@ -545,3 +583,58 @@ live!(refuses_a_repo_outside_the_authorized_root, c, e, {
     assert!(refused, "a repo outside the workspace must be refused");
 });
 
+// --- Fork-only: the hook layer the upstream fs/shell commands call ----------
+
+live!(fs_hooks_dispatch_a_remote_workspace, c, e, {
+    use terax_lib::modules::remote::hooks;
+    use terax_lib::modules::workspace::WorkspaceEnv;
+
+    let state = shared_remote_state();
+    let conn = state.insert_for_test(std::sync::Arc::new(c));
+    state.get(conn).unwrap().authorize_root(&e.root);
+    let ws = Some(WorkspaceEnv::Ssh { conn });
+
+    // Local workspaces fall through to upstream's own code.
+    assert!(hooks::read_dir(&None, &e.root, false).await.is_none());
+
+    let entries = hooks::read_dir(&ws, &e.root, false)
+        .await
+        .expect("remote workspace is intercepted")
+        .expect("read_dir");
+    assert!(entries.iter().any(|x| x.name == "src"));
+    assert!(entries.iter().all(|x| !x.name.starts_with('.')));
+
+    let file = path::join(&e.root, "hook-roundtrip.txt");
+    hooks::write_file(&ws, &file, "via hooks\n")
+        .await
+        .unwrap()
+        .expect("write");
+    match hooks::read_file(&ws, &file, false)
+        .await
+        .unwrap()
+        .expect("read")
+    {
+        terax_lib::modules::fs::file::ReadResult::Text { content, .. } => {
+            assert_eq!(content, "via hooks\n")
+        }
+        _ => panic!("expected text"),
+    }
+    hooks::delete(&ws, &file).await.unwrap().expect("delete");
+
+    let outside = hooks::write_file(&ws, "/tmp/terax-hook-escape.txt", "x")
+        .await
+        .unwrap();
+    assert!(outside.is_err(), "writes outside the root must be refused");
+
+    let out = hooks::run_command(
+        &ws,
+        "pwd",
+        Some(&e.root),
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .unwrap()
+    .expect("run_command");
+    assert_eq!(out.stdout.trim(), e.root.trim_end_matches('/'));
+    assert!(hooks::local_only(&ws).is_err());
+});
