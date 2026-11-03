@@ -39,6 +39,7 @@ import {
   type TreeRow,
   useRemoteBrowserStore,
 } from "./lib/browser";
+import { askConfirm, askText, validateEntryName } from "./lib/ask";
 import {
   iconSetsVersion,
   loadIconSet,
@@ -92,13 +93,19 @@ export function RemoteFiles({
     }
   };
 
-  const createEntry = (kind: "file" | "dir", dir: string) => {
-    const name = window.prompt(kind === "dir" ? "New folder" : "New file");
-    if (!name?.trim()) return;
+  const createEntry = async (kind: "file" | "dir", dir: string) => {
+    const name = await askText({
+      title: kind === "dir" ? "New folder" : "New file",
+      description: `In ${dir}`,
+      label: "Name",
+      confirmLabel: "Create",
+      validate: validateEntryName,
+    });
+    if (name === null) return;
     const env = browserEnv();
     if (!env) return;
-    const path = joinRemote(dir, name.trim());
-    void act(`Could not create ${name.trim()}`, dir, async () => {
+    const path = joinRemote(dir, name);
+    await act(`Could not create ${name}`, dir, async () => {
       await invoke(kind === "dir" ? "fs_create_dir" : "fs_create_file", {
         path,
         workspace: env,
@@ -129,12 +136,12 @@ export function RemoteFiles({
         <PanelIconButton
           label="New file"
           icon={PlusSignIcon}
-          onClick={() => createEntry("file", cwd)}
+          onClick={() => void createEntry("file", cwd)}
         />
         <PanelIconButton
           label="New folder"
           icon={Folder01Icon}
-          onClick={() => createEntry("dir", cwd)}
+          onClick={() => void createEntry("dir", cwd)}
         />
         <PanelIconButton
           label={showHidden ? "Hide hidden files" : "Show hidden files"}
@@ -201,7 +208,7 @@ function Row({
   iconSet: RemoteIconSet;
   onRunInTerminal?: (line: string) => void;
   onOpenFile?: (path: string) => void;
-  onCreate: (kind: "file" | "dir", dir: string) => void;
+  onCreate: (kind: "file" | "dir", dir: string) => Promise<void>;
   onAct: (
     label: string,
     dir: string,
@@ -224,25 +231,39 @@ function Row({
   };
   const cd = () => onRunInTerminal?.(`cd ${quoteShellArg(path, false)}`);
 
-  const rename = () => {
-    const next = window.prompt("Rename to", entry.name);
-    if (!next?.trim() || next.trim() === entry.name) return;
+  const rename = async () => {
+    const next = await askText({
+      title: `Rename ${entry.name}`,
+      label: "New name",
+      initial: entry.name,
+      confirmLabel: "Rename",
+      validate: validateEntryName,
+    });
+    if (next === null || next === entry.name) return;
     const env = browserEnv();
     if (!env) return;
-    void onAct(`Could not rename ${entry.name}`, parent, () =>
+    await onAct(`Could not rename ${entry.name}`, parent, () =>
       invoke("fs_rename", {
         from: path,
-        to: joinRemote(parent, next.trim()),
+        to: joinRemote(parent, next),
         workspace: env,
       }),
     );
   };
 
-  const remove = () => {
-    if (!window.confirm(`Delete ${entry.name}?`)) return;
+  const remove = async () => {
+    const ok = await askConfirm({
+      title: `Delete ${entry.name}?`,
+      description: isDir
+        ? "The folder and everything in it will be deleted on the host. This cannot be undone."
+        : "The file will be deleted on the host. This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     const env = browserEnv();
     if (!env) return;
-    void onAct(`Could not delete ${entry.name}`, parent, () =>
+    await onAct(`Could not delete ${entry.name}`, parent, () =>
       invoke("fs_delete", { path, workspace: env }),
     );
   };
@@ -270,7 +291,11 @@ function Row({
             type="button"
             role="treeitem"
             aria-expanded={isDir ? expanded : undefined}
-            onClick={activate}
+            onClick={(e) => {
+              // ctrl+click on macOS is the context menu, not an activation.
+              if (e.ctrlKey || e.button !== 0) return;
+              activate();
+            }}
             onKeyDown={(e) => {
               if (!isDir) return;
               if (e.key === "ArrowRight" && !expanded) void store().toggle(path);
@@ -327,10 +352,10 @@ function Row({
                 </ContextMenuItem>
               ) : null}
               <ContextMenuSeparator />
-              <ContextMenuItem onSelect={() => onCreate("file", path)}>
+              <ContextMenuItem onSelect={() => void onCreate("file", path)}>
                 New file here
               </ContextMenuItem>
-              <ContextMenuItem onSelect={() => onCreate("dir", path)}>
+              <ContextMenuItem onSelect={() => void onCreate("dir", path)}>
                 New folder here
               </ContextMenuItem>
             </>
@@ -360,7 +385,7 @@ function Row({
             </>
           )}
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={rename}>
+          <ContextMenuItem onSelect={() => void rename()}>
             <HugeiconsIcon icon={PencilEdit02Icon} size={13} />
             Rename
           </ContextMenuItem>
@@ -371,7 +396,7 @@ function Row({
             Copy path
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem variant="destructive" onSelect={remove}>
+          <ContextMenuItem variant="destructive" onSelect={() => void remove()}>
             <HugeiconsIcon icon={Delete02Icon} size={13} />
             Delete
           </ContextMenuItem>

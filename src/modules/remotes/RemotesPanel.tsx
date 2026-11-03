@@ -41,6 +41,7 @@ import {
 } from "react";
 import { GroupDialog } from "./GroupDialog";
 import { HostDialog } from "./HostDialog";
+import { AskDialogHost } from "./AskDialogHost";
 import { PersistentSessions } from "./PersistentSessions";
 import { RemoteFiles } from "./RemoteFiles";
 import { RemoteGit } from "./RemoteGit";
@@ -392,6 +393,7 @@ export function RemotesPanel({
       </div>
       </PanelBody>
 
+      <AskDialogHost />
       {editing ? (
         <HostDialog
           profile={editing}
