@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::{ChannelMsg, Disconnect};
+use russh::ChannelMsg;
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::ipc::{Channel, Response};
@@ -709,10 +709,14 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
         bus,
     } = args;
 
-    let (handle, resolved) = connect_authenticated(&target, &bus).await?;
+    // Fork-only (SSH port): lease the host's shared connection, so a second
+    // tab, the file browser and a remote workspace do not authenticate again.
+    let conn = super::pool::acquire(&target, &bus).await?;
+    let resolved = conn.resolved.clone();
 
     bus.emit(SshEvent::Phase { phase: "opening" });
-    let channel = handle
+    let channel = conn
+        .handle()
         .channel_open_session()
         .await
         .map_err(|e| format!("could not open session channel: {e}"))?;
@@ -764,7 +768,9 @@ pub async fn spawn(args: SpawnArgs) -> Result<Arc<SshSession>, String> {
         if let Err(e) = on_exit.send(code) {
             log::debug!("ssh exit channel closed: {e}");
         }
-        let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+        // Release this tab's lease; the pool disconnects once nothing else
+        // (another tab, SFTP, a workspace) is using the connection.
+        drop(conn);
     });
 
     Ok(session)

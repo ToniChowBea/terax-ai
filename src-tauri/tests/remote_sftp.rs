@@ -34,8 +34,8 @@ fn env() -> Option<Env> {
     })
 }
 
-async fn connect(e: &Env) -> RemoteConn {
-    let target = SshTarget {
+fn target_for(e: &Env) -> SshTarget {
+    SshTarget {
         host: e.host.clone(),
         port: Some(e.port),
         user: e.user.clone(),
@@ -50,11 +50,25 @@ async fn connect(e: &Env) -> RemoteConn {
         compression: None,
         env: Vec::new(),
         jumps: Vec::new(),
-    };
+    }
+}
+
+async fn connect(e: &Env) -> RemoteConn {
+    let target = target_for(e);
     let bus = Arc::new(PromptBus::new(Channel::new(|_| Ok(()))));
     RemoteConn::open(&target, &bus)
         .await
         .expect("connect to the test server")
+}
+
+fn shared_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    })
 }
 
 macro_rules! live {
@@ -65,11 +79,10 @@ macro_rules! live {
                 eprintln!("skipping {}: TERAX_TEST_SSH not set", stringify!($name));
                 return;
             };
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async {
+            // One runtime for every live test: connections are pooled per
+            // host process-wide, and a pooled connection's I/O task must
+            // outlive any single test.
+            shared_runtime().block_on(async {
                 let $conn = connect(&$e).await;
                 $body
             });
@@ -637,4 +650,131 @@ live!(fs_hooks_dispatch_a_remote_workspace, c, e, {
     .expect("run_command");
     assert_eq!(out.stdout.trim(), e.root.trim_end_matches('/'));
     assert!(hooks::local_only(&ws).is_err());
+});
+
+// --- Fork-only: one authenticated connection per host ----------------------
+
+// A shell channel, the SFTP subsystem of a remote workspace, an exec and a
+// second "tab" all ride one transport, so a password host is asked once.
+// The target carries no password: every connect has to ask through the
+// prompt bus, which this test answers and counts. Exactly one prompt and one
+// handshake must cover all four consumers.
+live!(one_connection_serves_shell_and_sftp_with_one_auth, c, e, {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use terax_lib::modules::ssh::pool;
+
+    drop(c);
+    // A pool namespace of its own, so tests running in parallel cannot open
+    // or reuse this connection and skew the counts.
+    const SCOPE: &str = "single-auth-test";
+    let mut target = target_for(&e);
+    target.auth = vec![AuthMethod::Password { password: None }];
+    let key = pool::scoped_key(SCOPE, &target).unwrap();
+
+    // The bus is created first and answers its own password prompts, the way
+    // the frontend does after the user types the password once.
+    let prompts = Arc::new(AtomicUsize::new(0));
+    let bus_slot: Arc<std::sync::OnceLock<Arc<PromptBus>>> = Arc::default();
+    let (seen, slot, pass) = (prompts.clone(), bus_slot.clone(), e.pass.clone());
+    let bus = Arc::new(PromptBus::new(Channel::new(move |ev| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = ev {
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if v["type"] == "authPrompt" && v["kind"] == "password" {
+                seen.fetch_add(1, SeqCst);
+                let id = v["promptId"].as_u64().unwrap();
+                let (slot, pass) = (slot.clone(), pass.clone());
+                std::thread::spawn(move || {
+                    let bus = slot.get().expect("bus installed");
+                    bus.respond(id, Some(pass)).expect("answer prompt");
+                });
+            }
+        }
+        Ok(())
+    })));
+    let _ = bus_slot.set(bus.clone());
+
+    let before = pool::connects_for(&key);
+
+    // "Terminal tab": lease the connection and run a real shell channel.
+    let tab = pool::acquire_scoped(SCOPE, &target, &bus)
+        .await
+        .expect("first lease");
+    let mut shell = tab
+        .handle()
+        .channel_open_session()
+        .await
+        .expect("shell channel");
+    shell
+        .request_pty(false, "xterm", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+    shell.request_shell(true).await.expect("shell");
+    shell
+        .data(&b"echo marker-$((40+2)); exit\n"[..])
+        .await
+        .expect("write to shell");
+
+    // "Remote file browser" while the shell is open: SFTP plus exec.
+    let browser = RemoteConn::open_scoped(SCOPE, &target, &bus)
+        .await
+        .expect("sftp");
+    assert_eq!(browser.pool_key(), key);
+    let listing = fs::read_dir(&browser, &e.root, false)
+        .await
+        .expect("sftp listing");
+    assert!(listing.iter().any(|x| x.name == "src"));
+    let out = browser.exec("echo exec-ok").await.expect("exec");
+    assert_eq!(out.stdout_text().trim(), "exec-ok");
+
+    // "Second tab" to the same host.
+    let second = pool::acquire_scoped(SCOPE, &target, &bus)
+        .await
+        .expect("second lease");
+    assert!(
+        Arc::ptr_eq(&tab, &second),
+        "a second tab must reuse the connection"
+    );
+
+    // The expanded marker only appears in the shell's output, not its echo.
+    let mut saw = String::new();
+    let read = async {
+        while let Some(msg) = shell.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { data } => {
+                    saw.push_str(&String::from_utf8_lossy(&data));
+                    if saw.contains("marker-42") {
+                        break;
+                    }
+                }
+                russh::ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), read)
+        .await
+        .expect("shell output in time");
+    assert!(saw.contains("marker-42"), "shell output: {saw:?}");
+
+    assert_eq!(
+        pool::connects_for(&key) - before,
+        1,
+        "shell, sftp, exec and a second tab must share one authenticated connection"
+    );
+    assert_eq!(prompts.load(SeqCst), 1, "exactly one password prompt");
+
+    // Released together: the transport closes once the last lease is gone,
+    // and the next consumer authenticates (and is asked) again.
+    browser.disconnect().await;
+    drop((browser, second, shell, tab));
+    let again = pool::acquire_scoped(SCOPE, &target, &bus)
+        .await
+        .expect("reconnect");
+    assert_eq!(
+        pool::connects_for(&key) - before,
+        2,
+        "a released host reconnects"
+    );
+    assert_eq!(prompts.load(SeqCst), 2, "a fresh connection asks again");
+    drop(again);
 });

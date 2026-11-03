@@ -11,7 +11,8 @@ use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use tokio::sync::Mutex;
 
-use crate::modules::ssh::session::{connect_authenticated, Handler, PromptBus};
+use crate::modules::ssh::pool::{self, PooledConn};
+use crate::modules::ssh::session::{Handler, PromptBus};
 use crate::modules::ssh::target::SshTarget;
 
 /// Output of a remote command. Bytes, not text: a git diff can carry content
@@ -40,7 +41,9 @@ impl ExecOutput {
 }
 
 pub struct RemoteConn {
-    handle: client::Handle<Handler>,
+    /// Lease on the host's shared connection (fork-only, SSH port): terminal
+    /// tabs to the same host ride the same transport.
+    conn: Arc<PooledConn>,
     /// Directories the user has opened as a workspace on this connection.
     /// Mutations must land inside one, mirroring the local `WorkspaceRegistry`
     /// so a path from the frontend cannot reach arbitrary parts of the server.
@@ -62,9 +65,21 @@ const MAX_EXEC_OUTPUT: usize = 16 * 1024 * 1024;
 
 impl RemoteConn {
     pub async fn open(target: &SshTarget, bus: &Arc<PromptBus>) -> Result<Self, String> {
-        let (handle, resolved) = connect_authenticated(target, bus).await?;
+        Self::open_scoped("", target, bus).await
+    }
 
-        let channel = handle
+    /// See `pool::acquire_scoped`; used by the live tests only.
+    #[doc(hidden)]
+    pub async fn open_scoped(
+        scope: &str,
+        target: &SshTarget,
+        bus: &Arc<PromptBus>,
+    ) -> Result<Self, String> {
+        let conn = pool::acquire_scoped(scope, target, bus).await?;
+        let resolved = conn.resolved.clone();
+
+        let channel = conn
+            .handle()
             .channel_open_session()
             .await
             .map_err(|e| format!("could not open a channel: {e}"))?;
@@ -84,7 +99,7 @@ impl RemoteConn {
             .unwrap_or_else(|_| format!("/home/{}", resolved.user));
 
         Ok(Self {
-            handle,
+            conn,
             roots: std::sync::Mutex::new(Vec::new()),
             sftp: Mutex::new(sftp),
             host: resolved.host,
@@ -117,9 +132,22 @@ impl RemoteConn {
     }
 
     /// Run a command on the remote and collect its output.
+    fn handle(&self) -> &client::Handle<Handler> {
+        self.conn.handle()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.conn.is_closed()
+    }
+
+    /// Key of the shared connection this rides on.
+    pub fn pool_key(&self) -> &str {
+        self.conn.key()
+    }
+
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, String> {
         let mut channel = self
-            .handle
+            .handle()
             .channel_open_session()
             .await
             .map_err(|e| format!("could not open a channel: {e}"))?;
@@ -176,16 +204,15 @@ impl RemoteConn {
         port: u16,
         originator: &str,
     ) -> Result<russh::Channel<client::Msg>, String> {
-        self.handle
+        self.handle()
             .channel_open_direct_tcpip(host.to_owned(), port as u32, originator.to_owned(), 0)
             .await
             .map_err(|e| format!("could not open a forward to {host}:{port}: {e}"))
     }
 
+    /// Close this workspace's SFTP channel. The transport itself is shared
+    /// and is disconnected by the pool when its last lease is dropped.
     pub async fn disconnect(&self) {
-        let _ = self
-            .handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
+        let _ = self.sftp.lock().await.close().await;
     }
 }

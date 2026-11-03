@@ -152,7 +152,8 @@ pub fn remote_prompt_respond(
 /// workspace and needs to know a cached entry has not gone stale.
 #[tauri::command]
 pub fn remote_is_open(state: tauri::State<Arc<RemoteState>>, id: u32) -> bool {
-    state.get(id).is_some()
+    // A dropped transport (server restart, network loss) is not open.
+    state.get(id).is_some_and(|c| !c.is_closed())
 }
 
 #[tauri::command]

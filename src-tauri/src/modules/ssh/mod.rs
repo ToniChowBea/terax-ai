@@ -7,6 +7,8 @@
 
 pub mod agent;
 pub mod config;
+// Fork-only (SSH port): one shared connection per host.
+pub mod pool;
 mod hostkey;
 pub mod session;
 pub mod target;
