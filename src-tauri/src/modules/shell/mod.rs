@@ -49,8 +49,11 @@ pub async fn shell_run_command(
     if trimmed.is_empty() {
         return Err("empty command".into());
     }
-    let workspace = WorkspaceEnv::from_option(workspace);
     let dur = clamp_timeout(timeout_secs);
+    if let Some(r) = crate::modules::remote::hooks::run_command(&workspace, &trimmed, cwd.as_deref(), dur).await {
+        return r;
+    }
+    let workspace = WorkspaceEnv::from_option(workspace);
 
     // Authorization canonicalizes the cwd and the run blocks until exit, so
     // both belong on the blocking pool, never on an async worker.
@@ -154,6 +157,7 @@ pub async fn shell_session_open(
     cwd: Option<String>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<u32, String> {
+    crate::modules::remote::hooks::local_only(&workspace)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     // wsl_home spawns wsl.exe on Windows and authorization hits the disk.
     let registry_app = app.clone();
@@ -236,6 +240,7 @@ pub async fn shell_bg_spawn(
     cwd: Option<String>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<u32, String> {
+    crate::modules::remote::hooks::local_only(&workspace)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     tauri::async_runtime::spawn_blocking(move || {
         authorize_spawn_cwd(

@@ -67,6 +67,13 @@ pub async fn fs_search(
     request_key: Option<String>,
 ) -> Result<SearchResult, String> {
     let ticket = request_key.as_deref().map(|key| supersede.begin(key));
+    if !query.trim().is_empty() {
+        let cap = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
+        let hidden = show_hidden.unwrap_or(false);
+        if let Some(r) = crate::modules::remote::hooks::search(&workspace, &root, query.trim(), cap, hidden).await {
+            return r;
+        }
+    }
     let index = index.inner().clone();
     blocking(move || {
         let cancelled = || ticket.as_ref().is_some_and(|t| t.is_superseded());
@@ -183,6 +190,15 @@ pub async fn fs_list_files(
     workspace: Option<WorkspaceEnv>,
     show_hidden: Option<bool>,
 ) -> Result<ListFilesResult, String> {
+    {
+        // Same clamps as `run_list_files`.
+        let cap = limit.unwrap_or(2_000).clamp(1, 10_000);
+        let depth = max_depth.unwrap_or(8).clamp(1, 16);
+        let hidden = show_hidden.unwrap_or(false);
+        if let Some(r) = crate::modules::remote::hooks::list_files(&workspace, &root, cap, depth, hidden).await {
+            return r;
+        }
+    }
     let index = index.inner().clone();
     blocking(move || run_list_files(&index, root, limit, max_depth, workspace, show_hidden)).await
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::modules::git::errors::{GitError, Result};
@@ -43,6 +43,7 @@ fn workspace_cache_key(workspace: &WorkspaceEnv) -> String {
     match workspace {
         WorkspaceEnv::Local => "local".into(),
         WorkspaceEnv::Wsl { distro } => format!("wsl:{distro}"),
+        WorkspaceEnv::Ssh { conn } => format!("ssh:{conn}"),
     }
 }
 
@@ -87,6 +88,9 @@ pub fn ensure_git_available(workspace: &WorkspaceEnv) -> Result<()> {
 }
 
 fn check_git_availability(workspace: &WorkspaceEnv) -> Availability {
+    // Through `run_git`, not `run_git_uncached`: a remote workspace has to be
+    // probed on the far side, or we would report the local git's version for
+    // a machine that may not have git at all.
     let output = match run_git(workspace, None, ["--version"], 10) {
         Ok(o) => o,
         Err(_) => return Availability::NotInstalled,
@@ -246,6 +250,75 @@ where
     run_git_uncached(workspace, cwd, args, timeout_secs, stdout_cap, true)
 }
 
+/// Run git on the far side of a remote workspace.
+///
+/// Synchronous like the local path, and blocking in the same way: the caller
+/// already waits on a channel for a local child, so this bridges to the async
+/// runtime with the same shape rather than making 17 call sites async.
+fn run_git_remote(
+    conn: u32,
+    cwd: Option<&str>,
+    args: &[OsString],
+    timeout_secs: u64,
+) -> Result<GitOutput> {
+    let Some(state) = crate::modules::remote::global() else {
+        return Err(GitError::Spawn("remote state unavailable".into()));
+    };
+    let Some(connection) = state.get(conn) else {
+        return Err(GitError::Spawn(
+            "the connection to this remote workspace was lost".into(),
+        ));
+    };
+
+    // An argument that is not valid UTF-8 cannot be sent to a remote shell.
+    // Everything here originates as a JSON string, so this is a bug guard.
+    let mut quoted: Vec<String> = Vec::with_capacity(args.len() + 3);
+    quoted.push("git".to_owned());
+    if let Some(cwd) = cwd.filter(|s| !s.is_empty()) {
+        quoted.push("-C".to_owned());
+        quoted.push(crate::modules::remote::path::quote(cwd));
+    }
+    for arg in args {
+        let Some(text) = arg.to_str() else {
+            return Err(GitError::Spawn("non-UTF-8 git argument".into()));
+        };
+        quoted.push(crate::modules::remote::path::quote(text));
+    }
+    // Same environment the local path pins, so a remote git can never block
+    // on an interactive credential prompt.
+    let command = format!(
+        "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= GIT_OPTIONAL_LOCKS=0 LC_ALL=C {}",
+        quoted.join(" ")
+    );
+
+    let dur = Duration::from_secs(timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
+    let (tx, rx) = mpsc::channel();
+    tauri::async_runtime::spawn(async move {
+        let _ = tx.send(connection.exec(&command).await);
+    });
+
+    match rx.recv_timeout(dur) {
+        Ok(Ok(out)) => Ok(GitOutput {
+            stdout: out.stdout,
+            stderr: out.stderr,
+            exit_code: Some(out.code),
+            timed_out: false,
+            truncated: out.truncated,
+        }),
+        Ok(Err(e)) => Err(GitError::Spawn(e)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Ok(GitOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code: None,
+            timed_out: true,
+            truncated: false,
+        }),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(GitError::Spawn("remote git task disconnected".into()))
+        }
+    }
+}
+
 fn run_git_uncached<I, S>(
     workspace: &WorkspaceEnv,
     cwd: Option<&str>,
@@ -263,6 +336,10 @@ where
         .into_iter()
         .map(|arg| arg.as_ref().to_os_string())
         .collect();
+    // Fork-only (SSH port): a remote workspace runs git on the far side.
+    if let Some(conn) = workspace.remote_conn() {
+        return run_git_remote(conn, cwd, &args, timeout_secs);
+    }
     let mut cmd = build_git_command(workspace, cwd, &args)?;
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
@@ -368,7 +445,7 @@ fn classify_auth_error(stderr: &str) -> Option<GitError> {
     None
 }
 
-fn decode_text(bytes: Vec<u8>) -> TextSource {
+pub fn decode_text(bytes: Vec<u8>) -> TextSource {
     let sniff_len = bytes.len().min(8192);
     if bytes[..sniff_len].contains(&0) {
         return TextSource::Binary;

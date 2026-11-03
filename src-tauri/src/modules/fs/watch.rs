@@ -259,6 +259,9 @@ pub async fn fs_watch_add(
     files: Option<Vec<String>>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if crate::modules::remote::hooks::skip_watch(&workspace) {
+        return Ok(());
+    }
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         let dirs = prepare_dirs(&app.state::<WorkspaceRegistry>(), &workspace, paths);
@@ -308,6 +311,9 @@ pub async fn fs_watch_remove(
     files: Option<Vec<String>>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if crate::modules::remote::hooks::skip_watch(&workspace) {
+        return Ok(());
+    }
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         // A removed/renamed dir no longer canonicalizes; fall back so the

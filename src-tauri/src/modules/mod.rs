@@ -13,9 +13,13 @@ pub mod lsp;
 pub mod net;
 pub mod proc;
 pub mod pty;
+// Fork-only (SSH port).
+pub mod remote;
 pub mod runtime;
 pub mod secrets;
 pub mod shell;
+// Fork-only (SSH port).
+pub mod ssh;
 pub mod vibrancy;
 pub mod window_presentation;
 pub mod workspace;

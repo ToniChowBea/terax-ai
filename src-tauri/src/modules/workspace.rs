@@ -325,6 +325,12 @@ pub enum WorkspaceEnv {
     Wsl {
         distro: String,
     },
+    /// Fork-only (SSH port): a directory on another machine, reached over the
+    /// remote connection with this id. There is no host path for it, so every
+    /// filesystem command branches on `remote_conn()` before resolving paths.
+    Ssh {
+        conn: u32,
+    },
 }
 
 impl WorkspaceEnv {
@@ -334,6 +340,14 @@ impl WorkspaceEnv {
 
     pub fn is_wsl(&self) -> bool {
         matches!(self, Self::Wsl { .. })
+    }
+
+    /// The remote connection backing this workspace, if any.
+    pub fn remote_conn(&self) -> Option<u32> {
+        match self {
+            Self::Ssh { conn } => Some(*conn),
+            _ => None,
+        }
     }
 }
 
@@ -349,12 +363,24 @@ pub fn resolve_path(path: &str, workspace: &WorkspaceEnv) -> PathBuf {
     match workspace {
         WorkspaceEnv::Local => PathBuf::from(path),
         WorkspaceEnv::Wsl { distro } => wsl_path_to_host(distro, path),
+        WorkspaceEnv::Ssh { .. } => unresolvable_remote(path),
     }
 }
 
 #[cfg(not(windows))]
-pub fn resolve_path(path: &str, _workspace: &WorkspaceEnv) -> PathBuf {
-    PathBuf::from(path)
+pub fn resolve_path(path: &str, workspace: &WorkspaceEnv) -> PathBuf {
+    match workspace {
+        WorkspaceEnv::Ssh { .. } => unresolvable_remote(path),
+        _ => PathBuf::from(path),
+    }
+}
+
+/// A remote workspace has no local path. Callers must branch on
+/// `remote_conn()` first; reaching here is a bug, so return an empty path that
+/// cannot resolve instead of a plausible local one on the wrong machine.
+fn unresolvable_remote(path: &str) -> PathBuf {
+    log::error!("resolve_path called for a remote workspace path {path:?}");
+    PathBuf::new()
 }
 
 /// True for WSL distro names safe to splice into a UNC path. Real WSL distros

@@ -35,6 +35,13 @@ pub struct FsDeleteBatchResult {
     failed: usize,
 }
 
+impl FsDeleteBatchResult {
+    /// Fork-only (SSH port): lets the remote hook build a result.
+    pub(crate) fn new(deleted: Vec<String>, failed: usize) -> Self {
+        Self { deleted, failed }
+    }
+}
+
 fn metadata_if_exists(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => Ok(Some(metadata)),
@@ -238,6 +245,9 @@ pub async fn fs_create_file(
     path: String,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if let Some(r) = crate::modules::remote::hooks::create_file(&workspace, &path).await {
+        return r;
+    }
     let index = index.inner().clone();
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
@@ -268,6 +278,9 @@ pub async fn fs_create_dir(
     path: String,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if let Some(r) = crate::modules::remote::hooks::create_dir(&workspace, &path).await {
+        return r;
+    }
     let index = index.inner().clone();
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
@@ -297,6 +310,9 @@ pub async fn fs_rename(
     to: String,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if let Some(r) = crate::modules::remote::hooks::rename(&workspace, &from, &to).await {
+        return r;
+    }
     let index = index.inner().clone();
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
@@ -337,6 +353,9 @@ pub async fn fs_move(
     expected_conflict: Option<String>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<FsMoveResult, String> {
+    if let Some(r) = crate::modules::remote::hooks::move_path(&workspace, &from, &to, expected_conflict.as_deref()).await {
+        return r;
+    }
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         let root = resolve_authorized_root(&root, &workspace, &app.state::<WorkspaceRegistry>())?;
@@ -415,6 +434,9 @@ pub async fn fs_delete(
     path: String,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
+    if let Some(r) = crate::modules::remote::hooks::delete(&workspace, &path).await {
+        return r;
+    }
     let index = index.inner().clone();
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
@@ -440,6 +462,9 @@ pub async fn fs_delete_batch(
     root: String,
     workspace: Option<WorkspaceEnv>,
 ) -> FsDeleteBatchResult {
+    if let Some(r) = crate::modules::remote::hooks::delete_batch(&workspace, &paths).await {
+        return r;
+    }
     let count = paths.len();
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);

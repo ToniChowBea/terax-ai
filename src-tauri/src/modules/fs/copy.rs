@@ -35,6 +35,9 @@ pub async fn fs_copy(
     workspace: Option<WorkspaceEnv>,
     rename_on_conflict: Option<bool>,
 ) -> Result<CopyResult, String> {
+    if let Some(r) = crate::modules::remote::hooks::copy(&workspace, &sources, &dest_dir).await {
+        return r;
+    }
     tauri::async_runtime::spawn_blocking(move || {
         copy_batch(
             sources,

@@ -254,6 +254,16 @@ pub fn run() {
         .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
         .manage(shell::ShellState::default())
+        // Fork-only (SSH port): SSH terminals, remote workspaces and tunnels.
+        .manage(modules::ssh::SshState::default())
+        .manage({
+            let state = std::sync::Arc::new(modules::remote::RemoteState::default());
+            // Sync code (git process layer, fs hooks) reaches the same
+            // instance through this global.
+            modules::remote::set_global(state.clone());
+            state
+        })
+        .manage(modules::remote::forward::TunnelState::default())
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
@@ -283,6 +293,31 @@ pub fn run() {
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
             pty::pty_list_shells,
+            // Fork-only (SSH port).
+            modules::ssh::ssh_reserve,
+            modules::ssh::ssh_open,
+            modules::ssh::ssh_write,
+            modules::ssh::ssh_resize,
+            modules::ssh::ssh_signal,
+            modules::ssh::ssh_prompt_respond,
+            modules::ssh::ssh_prompt_cancel,
+            modules::ssh::ssh_close,
+            modules::ssh::ssh_close_all,
+            modules::ssh::ssh_discover_keys,
+            modules::ssh::ssh_agent_identities,
+            modules::ssh::ssh_read_config,
+            modules::remote::remote_reserve,
+            modules::remote::remote_open,
+            modules::remote::remote_prompt_respond,
+            modules::remote::remote_close,
+            modules::remote::remote_is_open,
+            modules::remote::remote_close_all,
+            modules::remote::remote_authorize,
+            modules::remote::remote_download,
+            modules::remote::tunnel_open,
+            modules::remote::tunnel_close,
+            modules::remote::tunnel_list,
+            modules::remote::tunnel_close_all,
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,

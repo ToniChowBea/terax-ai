@@ -11,9 +11,9 @@ use super::index::FileIndexState;
 use super::mutate::note_changed;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
-const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+pub(crate) const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// Ceiling for explicit "open anyway"; mirrored as FORCE_READ_LIMIT in useDocument.ts.
-const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 #[derive(Serialize)]
@@ -63,6 +63,9 @@ pub async fn fs_read_file(
     workspace: Option<WorkspaceEnv>,
     force: Option<bool>,
 ) -> Result<ReadResult, String> {
+    if let Some(r) = crate::modules::remote::hooks::read_file(&workspace, &path, force.unwrap_or(false)).await {
+        return r;
+    }
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         read_file_sync(&resolve_path(&path, &workspace), force.unwrap_or(false))
@@ -139,6 +142,11 @@ pub async fn fs_write_file(
     app: tauri::AppHandle,
     index: tauri::State<'_, FileIndexState>,
 ) -> Result<u64, String> {
+    if let Some(r) = crate::modules::remote::hooks::write_file(&workspace, &path, &content).await {
+        let mtime = r?;
+        let _ = app.emit("fs:file-written", FileWrittenEvent { path, source });
+        return Ok(mtime);
+    }
     let index = index.inner().clone();
     let (path, mtime) = blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
@@ -169,6 +177,9 @@ pub async fn fs_canonicalize(
     path: String,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<String, String> {
+    if let Some(r) = crate::modules::remote::hooks::canonicalize(&workspace, &path).await {
+        return r;
+    }
     blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         let p = resolve_path(&path, &workspace);
@@ -180,6 +191,9 @@ pub async fn fs_canonicalize(
 
 #[tauri::command]
 pub async fn fs_stat(path: String, workspace: Option<WorkspaceEnv>) -> Result<FileStat, String> {
+    if let Some(r) = crate::modules::remote::hooks::stat(&workspace, &path).await {
+        return r;
+    }
     blocking(move || stat_path(path, workspace)).await
 }
 

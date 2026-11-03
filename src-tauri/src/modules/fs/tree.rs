@@ -138,6 +138,9 @@ pub async fn fs_read_dir(
     git_decorations: Option<bool>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<Vec<DirEntry>, String> {
+    if let Some(r) = crate::modules::remote::hooks::read_dir(&workspace, &path, show_hidden).await {
+        return r;
+    }
     blocking(move || read_dir_entries(path, show_hidden, git_decorations, workspace)).await
 }
 
@@ -233,6 +236,9 @@ pub async fn list_subdirs(
     show_hidden: bool,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<Vec<String>, String> {
+    if let Some(r) = crate::modules::remote::hooks::list_subdirs(&workspace, &path, show_hidden).await {
+        return r;
+    }
     blocking(move || subdirs(path, show_hidden, workspace)).await
 }
 

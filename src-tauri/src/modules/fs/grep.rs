@@ -182,6 +182,13 @@ pub async fn fs_grep(
     max_results: Option<usize>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GrepResponse, String> {
+    if !pattern.is_empty() {
+        let case_sensitive = !case_insensitive.unwrap_or(false);
+        let max = max_results.unwrap_or(500);
+        if let Some(r) = crate::modules::remote::hooks::grep(&workspace, &root, &pattern, max, case_sensitive).await {
+            return r;
+        }
+    }
     blocking(move || {
         run_grep(
             pattern,
@@ -247,6 +254,19 @@ pub async fn fs_grep_interactive(
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GrepResponse, String> {
     let ticket = supersede.begin(INTERACTIVE_KEY);
+    if !pattern.trim().is_empty() {
+        let max = max_results.unwrap_or(200);
+        if let Some(r) = crate::modules::remote::hooks::grep(&workspace, &root, &pattern, max, false).await {
+            return r.map(|mut res| {
+                // A superseded keystroke's result must not overwrite a newer one.
+                if ticket.is_superseded() {
+                    res.hits.clear();
+                    res.cancelled = true;
+                }
+                res
+            });
+        }
+    }
     blocking(move || {
         run_grep_interactive(pattern, root, max_results, workspace, &|| {
             ticket.is_superseded()
@@ -304,6 +324,11 @@ pub async fn fs_glob(
     max_results: Option<usize>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GlobResponse, String> {
+    if !pattern.is_empty() {
+        if let Some(r) = crate::modules::remote::hooks::glob(&workspace, &root, &pattern, max_results.unwrap_or(500)).await {
+            return r;
+        }
+    }
     blocking(move || run_glob(pattern, root, max_results, workspace)).await
 }
 
