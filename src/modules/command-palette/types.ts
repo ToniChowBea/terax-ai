@@ -1,5 +1,6 @@
 import type { ShortcutId } from "@/modules/shortcuts";
 import type { TerminalIcon } from "@hugeicons/core-free-icons";
+import type { ReactNode } from "react";
 
 type PaletteIcon = typeof TerminalIcon;
 
@@ -13,7 +14,17 @@ export type PaletteItem = {
   shortcutId?: ShortcutId;
   trailing?: string;
   disabledReason?: string;
+  /** Fork-only: rendered instead of `icon` (open tabs show their tab icon). */
+  leading?: ReactNode;
+  /** Fork-only: a colour dot, from the fixed tab palette or a validated hex. */
+  accent?: string;
   run: () => void;
 };
 
-export type PaletteMode = "commands" | "history" | "content" | "help";
+export type PaletteMode =
+  | "commands"
+  | "history"
+  | "content"
+  | "help"
+  /** Fork-only: "@" lists only open tabs. */
+  | "tabs";

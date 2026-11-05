@@ -33,6 +33,8 @@ export const COMMAND_GROUPS = [
   "Search",
   "View",
   "AI",
+  // Fork-only: open tabs (see tabItems.tsx).
+  "Open tabs",
 ] as const;
 
 export type CommandPaletteActionContext = {

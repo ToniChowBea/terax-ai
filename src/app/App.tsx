@@ -30,7 +30,12 @@ import {
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
-import { CommandPalette, createCommandItems } from "@/modules/command-palette";
+import {
+  CommandPalette,
+  createCommandItems,
+  createTabColorItems,
+  createTabItems,
+} from "@/modules/command-palette";
 import { useControlBridge } from "@/modules/control";
 import {
   type EditorPaneHandle,
@@ -1534,6 +1539,24 @@ export default function App() {
     [newTabInSpace],
   );
 
+  /** Fork-only: picking an open tab in the palette (any space, any pane). */
+  const activateTabFromPalette = useCallback(
+    (tabId: number, leafId?: number) => {
+      const t = tabsRef.current.find((x) => x.id === tabId);
+      if (!t) return;
+      if (useSpaces.getState().activeId !== t.spaceId) {
+        useSpaces.getState().setActive(t.spaceId);
+      }
+      setActiveId(tabId);
+      if (leafId !== undefined) {
+        focusPane(tabId, leafId);
+        // Give the pane keyboard focus once its tab is on screen.
+        setTimeout(() => terminalRefs.current.get(leafId)?.focus(), 50);
+      }
+    },
+    [setActiveId, focusPane],
+  );
+
   const jumpToTab = useCallback(
     (tabId: number) => {
       const t = tabsRef.current.find((x) => x.id === tabId);
@@ -1600,7 +1623,18 @@ export default function App() {
               activeTab?.kind === "terminal" && activeTab.tmuxSession
                 ? detachActiveSession
                 : undefined,
-          })
+          }).concat(
+            // Fork-only: tab colours and open tabs (all spaces).
+            createTabColorItems(activeTab, setTabColor),
+            createTabItems({
+              tabs,
+              activeId,
+              spaces: useSpaces.getState().spaces,
+              host: (id) => remoteCommandTargets.find((r) => r.id === id),
+              hostColor,
+              activate: activateTabFromPalette,
+            }),
+          )
         : [],
     [
       commandPaletteOpen,
@@ -1629,6 +1663,9 @@ export default function App() {
       focusExplorerSearch,
       activeTab,
       detachActiveSession,
+      setTabColor,
+      hostColor,
+      activateTabFromPalette,
     ],
   );
 

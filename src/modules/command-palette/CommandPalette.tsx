@@ -27,6 +27,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { COMMAND_GROUPS } from "./commands";
+import { TAB_ITEM_PREFIX, TABS_GROUP } from "./tabItems";
 import { useCommandHistory } from "./hooks/useCommandHistory";
 import {
   CONTENT_SEARCH_MIN_QUERY,
@@ -81,10 +82,21 @@ export function CommandPalette({
 
   const mru = useMemo(() => (open ? mruSnapshot() : {}), [open]);
 
+  const listsItems = parsed.mode === "commands" || parsed.mode === "tabs";
   const rankedCommands = useMemo(() => {
-    if (inThemes || parsed.mode !== "commands") return [];
-    return rankCommands(commandItems, parsed.term, mru);
-  }, [commandItems, parsed.term, parsed.mode, inThemes, mru]);
+    if (inThemes || !listsItems) return [];
+    const items =
+      parsed.mode === "tabs"
+        ? commandItems.filter((i) => i.group === TABS_GROUP)
+        : commandItems;
+    return rankCommands(items, parsed.term, mru);
+  }, [commandItems, parsed.term, parsed.mode, listsItems, inThemes, mru]);
+  // Fork-only: with a query, groups follow their best match, so an open tab
+  // that matches better than any command is listed first.
+  const groupOrder = useMemo(
+    () => orderGroups(rankedCommands, !!parsed.term),
+    [rankedCommands, parsed.term],
+  );
 
   const themes = useMemo(() => {
     if (!inThemes) return [];
@@ -161,7 +173,8 @@ export function CommandPalette({
       if (item.id === "theme.pick") return enterThemes();
       if (item.id === "search.content") return setQuery("#");
       if (item.id === "history.open") return setQuery(">");
-      recordUse(item.id);
+      // Tab ids are per run; remembering them would only pollute the MRU.
+      if (!item.id.startsWith(TAB_ITEM_PREFIX)) recordUse(item.id);
       runAfterClose(item.run);
     },
     [enterThemes, runAfterClose],
@@ -208,7 +221,9 @@ export function CommandPalette({
       ? "Find text in files..."
       : parsed.mode === "history"
         ? "Search command history..."
-        : "Type a command, > for history, # to find in files";
+        : parsed.mode === "tabs"
+          ? "Go to an open tab..."
+          : "Type a command or tab, > for history, # to find in files, @ for tabs";
 
   return (
     <CommandDialog
@@ -268,11 +283,11 @@ export function CommandPalette({
                 ))}
                 {themes.length === 0 ? <StatusItem label="No themes" /> : null}
               </CommandGroup>
-            ) : parsed.mode === "commands" ? (
+            ) : listsItems ? (
               rankedCommands.length === 0 ? (
                 <EmptyHint />
               ) : (
-                COMMAND_GROUPS.map((group) => {
+                groupOrder.map((group) => {
                   const rows = rankedCommands.filter((a) => a.group === group);
                   if (rows.length === 0) return null;
                   return (
@@ -385,7 +400,20 @@ export function CommandPalette({
   );
 }
 
-function rankCommands(
+/** Fork-only: groups in order of their best-ranked item, else the fixed order. */
+export function orderGroups(
+  ranked: PaletteItem[],
+  byRank: boolean,
+): readonly string[] {
+  if (!byRank) return COMMAND_GROUPS;
+  const seen: string[] = [];
+  for (const item of ranked) {
+    if (!seen.includes(item.group)) seen.push(item.group);
+  }
+  return seen;
+}
+
+export function rankCommands(
   items: PaletteItem[],
   term: string,
   mru: Record<string, number>,
@@ -421,12 +449,23 @@ function ActionItem({
       onSelect={onRun}
       className="text-[12.5px]"
     >
-      {item.icon ? (
+      {item.leading ? (
+        <span className="flex size-[14px] shrink-0 items-center justify-center text-muted-foreground">
+          {item.leading}
+        </span>
+      ) : item.icon ? (
         <HugeiconsIcon
           icon={item.icon}
           size={14}
           strokeWidth={1.75}
           className="text-muted-foreground"
+        />
+      ) : null}
+      {item.accent ? (
+        <span
+          aria-hidden
+          className="size-2 shrink-0 rounded-full"
+          style={{ background: item.accent }}
         />
       ) : null}
       <span className="truncate">{item.title}</span>
