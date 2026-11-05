@@ -73,6 +73,37 @@ describe("serializeTabs", () => {
     }
   });
 
+  it("persists and restores tab colours (fork-only)", () => {
+    const tabs: Tab[] = [
+      term({ color: "rose" }),
+      {
+        id: 9,
+        kind: "editor",
+        spaceId: "s1",
+        title: "a.ts",
+        path: "/r/a.ts",
+        dirty: false,
+        preview: false,
+        color: "none",
+      },
+    ];
+    const ser = serializeTabs(tabs);
+    expect(ser.map((s) => s.color)).toEqual(["rose", "none"]);
+    let n = 100;
+    const back = hydrateTabs(ser, "s1", () => n++);
+    expect(back.map((t) => t.color)).toEqual(["rose", "none"]);
+  });
+
+  it("drops a colour on disk that is not a palette key", () => {
+    const ser = serializeTabs([term({})]);
+    let n = 100;
+    for (const bad of ["#ff0000", "red;x", 7, "Blue"]) {
+      const forged = [{ ...ser[0], color: bad }] as never;
+      const [t] = hydrateTabs(forged, "s1", () => n++);
+      expect(t.color).toBeUndefined();
+    }
+  });
+
   it("drops remote terminals, which cannot survive the process", () => {
     expect(serializeTabs([term({ remoteId: "h1" })])).toHaveLength(0);
     expect(serializeTabs([term({})])).toHaveLength(1);

@@ -5,6 +5,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { TabColorMenu } from "./TabColorMenu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,6 +44,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type CSSProperties,
   Fragment,
   useCallback,
   useEffect,
@@ -52,6 +54,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { selectTabAgentStatus } from "./lib/tabAgentStatus";
+import { resolveTabAccent, type TabColor } from "./lib/tabColor";
 import { labelFor } from "./lib/tabLabel";
 import type { EditorTab, Tab, TerminalTab } from "./lib/useTabs";
 import { NewTabMenu } from "./NewTabMenu";
@@ -79,6 +82,10 @@ type Props = {
   /** Move a dragged tab to a new position (insertion gap index 0..tabs.length). */
   onReorder: (fromId: number, toGapIndex: number) => void;
   onOverrideLanguage?: (id: number, lang: string | null) => void;
+  /** Fork-only: set a tab's colour; null goes back to inheriting. */
+  onSetColor?: (id: number, color: TabColor | null) => void;
+  /** Fork-only: an SSH host's own colour, inherited by its tabs. */
+  hostColor?: (remoteId: string) => string | undefined;
   compact?: boolean;
 };
 
@@ -100,6 +107,8 @@ export function TabBar({
   onRename,
   onReorder,
   onOverrideLanguage,
+  onSetColor,
+  hostColor,
   compact,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -243,6 +252,7 @@ export function TabBar({
               const isPreview =
                 (t.kind === "editor" || t.kind === "git-diff") && t.preview;
               const isActive = t.id === activeId;
+              const accent = resolveTabAccent(t, hostColor ?? noHostColor);
               const isNew = !firstRender && !seen.has(t.id);
 
               const srcIndex = tabs.findIndex((x) => x.id === draggingId);
@@ -357,7 +367,19 @@ export function TabBar({
                         ? "px-2!"
                         : "ps-2! pe-1!",
                   )}
+                  style={accentStyle(accent, isActive)}
                 >
+                  {accent ? (
+                    <span
+                      aria-hidden
+                      data-tab-accent
+                      className="pointer-events-none absolute inset-x-1.5 bottom-0.5 h-[2px] rounded-full"
+                      style={{
+                        background: accent,
+                        opacity: isActive ? 1 : 0.7,
+                      }}
+                    />
+                  ) : null}
                   <span
                     className={cn(
                       "flex min-w-0 items-center gap-1.5",
@@ -545,6 +567,20 @@ export function TabBar({
                         )}
                       </>
                     )}
+                    {onSetColor ? (
+                      <>
+                        <TabColorMenu
+                          tab={t}
+                          inherited={
+                            t.kind === "terminal" && t.remoteId
+                              ? hostColor?.(t.remoteId)
+                              : undefined
+                          }
+                          onSetColor={(c) => onSetColor(t.id, c)}
+                        />
+                        <ContextMenuSeparator />
+                      </>
+                    ) : null}
                     <ContextMenuItem
                       className="gap-2 rounded-xl px-2.5 py-1.5 text-[13px]"
                       disabled={!hasTabsToRight}
@@ -792,4 +828,23 @@ function TabRenameInput({
       }}
     />
   );
+}
+
+function noHostColor(): undefined {
+  return undefined;
+}
+
+/**
+ * Fork-only: a coloured tab gets a faint tint of its colour (stronger when
+ * active) on top of the shared active pill, plus the strip. The colour is a
+ * fixed palette value or a validated hex, never free text.
+ */
+function accentStyle(
+  accent: string | undefined,
+  active: boolean,
+): CSSProperties | undefined {
+  if (!accent) return undefined;
+  return {
+    backgroundColor: `color-mix(in oklch, ${accent} ${active ? 18 : 9}%, transparent)`,
+  };
 }

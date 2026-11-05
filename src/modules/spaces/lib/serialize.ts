@@ -10,12 +10,13 @@ import type {
   Tab,
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
+import { isTabColor, type TabColor } from "@/modules/tabs/lib/tabColor";
 
 type SerializedNode =
   | { kind: "leaf"; cwd?: string; active?: boolean }
   | { kind: "split"; dir: SplitDir; children: SerializedNode[] };
 
-export type SerializedTab =
+export type SerializedTab = (
   | {
       kind: "terminal";
       tree: SerializedNode;
@@ -24,7 +25,16 @@ export type SerializedTab =
     }
   | { kind: "editor"; path: string }
   | { kind: "preview"; url: string }
-  | { kind: "markdown"; path: string };
+  | { kind: "markdown"; path: string }
+) & {
+  /** Fork-only: palette key; anything else on disk is dropped on restore. */
+  color?: TabColor;
+};
+
+/** Fork-only: the tab's colour, only when it is a palette key. */
+function colorOf(value: unknown): { color?: TabColor } {
+  return isTabColor(value) ? { color: value } : {};
+}
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -71,6 +81,11 @@ export function isSerializableTab(tab: Tab): boolean {
 }
 
 function serializeTab(tab: Tab): SerializedTab | null {
+  const base = serializeTabBody(tab);
+  return base ? { ...base, ...colorOf(tab.color) } : null;
+}
+
+function serializeTabBody(tab: Tab): SerializedTab | null {
   if (!isSerializableTab(tab)) return null;
   switch (tab.kind) {
     case "terminal":
@@ -145,6 +160,16 @@ function collectLeaves(node: PaneNode): Array<{ id: number; cwd?: string }> {
 }
 
 function hydrateTab(
+  s: SerializedTab,
+  spaceId: string,
+  allocId: () => number,
+): Tab | null {
+  const tab = hydrateTabBody(s, spaceId, allocId);
+  // Restored from disk: untrusted, so only a palette key survives.
+  return tab ? { ...tab, ...colorOf(s.color) } : null;
+}
+
+function hydrateTabBody(
   s: SerializedTab,
   spaceId: string,
   allocId: () => number,

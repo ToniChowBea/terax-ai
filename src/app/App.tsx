@@ -184,6 +184,7 @@ export default function App() {
     newTab,
     newBlockTab,
     newRemoteTab,
+    setTabColor,
     newAgentTab,
     newAgentGroupTab,
     newPrivateTab,
@@ -951,6 +952,13 @@ export default function App() {
         toast.error("Could not detach", { description: String(e) }),
       );
   }, [activeTab]);
+
+  // Fork-only: an SSH host's colour, which its tabs inherit unless they
+  // have their own (resolved and validated in tabs/lib/tabColor.ts).
+  const hostColor = useCallback(
+    (remoteId: string) => remoteProfiles.find((p) => p.id === remoteId)?.color,
+    [remoteProfiles],
+  );
 
   const connectRemoteById = useCallback(
     (id: string) => {
@@ -1759,6 +1767,8 @@ export default function App() {
               searchTarget={searchTarget}
               searchRef={searchInlineRef}
               onOverrideLanguage={setOverrideLanguage}
+              onSetTabColor={setTabColor}
+              hostColor={hostColor}
             />
           )}
 

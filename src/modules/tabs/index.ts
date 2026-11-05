@@ -22,3 +22,13 @@ export {
 } from "./lib/useTabs";
 export { useWorkspaceCwd } from "./lib/useWorkspaceCwd";
 export { useWindowTitle } from "./lib/useWindowTitle";
+// Fork-only: per-tab colours.
+export {
+  isTabColor,
+  resolveTabAccent,
+  TAB_COLOR_KEYS,
+  type TabColor,
+  type TabColorKey,
+  tabColorCss,
+  tabColorName,
+} from "./lib/tabColor";

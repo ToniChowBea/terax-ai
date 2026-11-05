@@ -3,7 +3,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { NotificationBell } from "@/modules/agents";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
-import type { Tab } from "@/modules/tabs";
+import type { Tab, TabColor } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import {
   CommandIcon,
@@ -47,6 +47,9 @@ type Props = {
   /** Move a dragged tab to a new position (insertion gap index). */
   onReorder: (fromId: number, toGapIndex: number) => void;
   onOverrideLanguage?: (id: number, lang: string | null) => void;
+  /** Fork-only: tab colours, passed through to the tab bar. */
+  onSetTabColor?: (id: number, color: TabColor | null) => void;
+  hostColor?: (remoteId: string) => string | undefined;
   onToggleSidebar: () => void;
   onOpenCommandPalette: () => void;
   onActivateAgent: (tabId: number, leafId: number) => void;
@@ -77,6 +80,8 @@ export function Header({
   onRename,
   onReorder,
   onOverrideLanguage,
+  onSetTabColor,
+  hostColor,
   onToggleSidebar,
   onOpenCommandPalette,
   onActivateAgent,
@@ -186,6 +191,8 @@ export function Header({
           onRename={onRename}
           onReorder={onReorder}
           onOverrideLanguage={onOverrideLanguage}
+          onSetColor={onSetTabColor}
+          hostColor={hostColor}
           compact={compact}
         />
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />

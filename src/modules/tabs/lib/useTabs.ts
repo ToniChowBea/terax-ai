@@ -1,4 +1,5 @@
 import { isMarkdownPath } from "@/lib/utils";
+import type { TabColor } from "./tabColor";
 import {
   type AgentInstanceCount,
   createAgentPanePlan,
@@ -34,6 +35,8 @@ type TabBase = {
   spaceId: string;
   /** Restored from disk, not yet activated: rendered as a placeholder, not mounted. */
   cold?: boolean;
+  /** Fork-only: palette colour for the tab; see lib/tabColor.ts. */
+  color?: TabColor;
 };
 
 export type TerminalTab = TabBase & {
@@ -1360,6 +1363,23 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setTabs],
   );
 
+  /** Fork-only: set a tab's colour; null clears it back to "inherit". */
+  const setTabColor = useCallback(
+    (id: number, color: TabColor | null) => {
+      setTabs((curr) =>
+        curr.map((t) => {
+          if (t.id !== id) return t;
+          if (color === null) {
+            const { color: _drop, ...rest } = t;
+            return rest as Tab;
+          }
+          return { ...t, color };
+        }),
+      );
+    },
+    [setTabs],
+  );
+
   const focusPane = useCallback(
     (tabId: number, leafId: number) => {
       setTabs((curr) =>
@@ -1564,6 +1584,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newTab,
     newBlockTab,
     newRemoteTab,
+    setTabColor,
     newAgentTab,
     newAgentGroupTab,
     newPrivateTab,
