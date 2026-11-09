@@ -30,11 +30,14 @@ build:
 	pnpm install
 	pnpm tauri build --bundles app --ignore-version-mismatches
 
+# A running Terax keeps its old code until it is quit. It is not killed here:
+# this usually runs in a Terax terminal, so that would end make and every shell.
+# -a because pgrep otherwise skips its own ancestors, which Terax then is.
 install: build
-	@pkill -x Terax 2>/dev/null && sleep 1 || true
 	rm -rf /Applications/$(APP)
 	cp -R $(BUNDLE_DIR)/$(APP) /Applications/
 	xattr -dr com.apple.quarantine /Applications/$(APP) || true
 	@echo "Installed /Applications/$(APP)"
+	@pgrep -ax terax >/dev/null && echo "Terax is still running the old build: quit it (Cmd+Q) and reopen to update." || true
 
 weekly: update install
