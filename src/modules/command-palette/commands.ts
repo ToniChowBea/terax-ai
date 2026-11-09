@@ -37,6 +37,8 @@ export const COMMAND_GROUPS = [
   "Open tabs",
 ] as const;
 
+export const SPACE_ITEM_PREFIX = "spaces.switch.";
+
 export type CommandPaletteActionContext = {
   tabs: Tab[];
   activeId: number;
@@ -136,7 +138,7 @@ export function createCommandItems(
       run: ctx.newSpace,
     },
     ...ctx.spaces.map((sp) => ({
-      id: `spaces.switch.${sp.id}`,
+      id: `${SPACE_ITEM_PREFIX}${sp.id}`,
       title: `Switch to ${sp.name}`,
       group: "Spaces" as const,
       keywords: ["space", "switch", "session", sp.name],

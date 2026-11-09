@@ -26,7 +26,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { COMMAND_GROUPS } from "./commands";
+import { COMMAND_GROUPS, SPACE_ITEM_PREFIX } from "./commands";
 import { TAB_ITEM_PREFIX, TABS_GROUP } from "./tabItems";
 import { useCommandHistory } from "./hooks/useCommandHistory";
 import {
@@ -426,8 +426,14 @@ export function rankCommands(
     const s = fuzzyBest(term, [item.title, item.group, ...(item.keywords ?? [])]);
     if (s !== null) scored.push({ item, s });
   }
+  // Fork-only: a matching space outranks everything, so its group leads.
+  const isSpace = (item: PaletteItem) =>
+    item.id.startsWith(SPACE_ITEM_PREFIX) ? 1 : 0;
   scored.sort(
-    (a, b) => b.s - a.s || mruRank(mru, b.item.id) - mruRank(mru, a.item.id),
+    (a, b) =>
+      isSpace(b.item) - isSpace(a.item) ||
+      b.s - a.s ||
+      mruRank(mru, b.item.id) - mruRank(mru, a.item.id),
   );
   return scored.map((x) => x.item);
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Tab } from "@/modules/tabs";
 import { tabColorCss } from "@/modules/tabs";
 import { orderGroups, rankCommands } from "./CommandPalette";
-import { COMMAND_GROUPS } from "./commands";
+import { COMMAND_GROUPS, SPACE_ITEM_PREFIX } from "./commands";
 import { parseQuery } from "./lib/mode";
 import {
   createTabColorItems,
@@ -151,6 +151,33 @@ describe("palette tab items", () => {
     // With no term, groups keep the fixed order and tabs come last.
     expect(orderGroups(ranked, false)).toBe(COMMAND_GROUPS);
     expect(COMMAND_GROUPS[COMMAND_GROUPS.length - 1]).toBe(TABS_GROUP);
+  });
+
+  it("lists a matching space first when searching, even if others match better", () => {
+    const row = (id: string, title: string, group: string, keywords: string[] = []) =>
+      ({ id, title, group, keywords, run: () => {} }) as PaletteItem;
+    const space = row(`${SPACE_ITEM_PREFIX}w`, "Switch to Work", "Spaces", ["Work"]);
+    const items = [
+      row("tab:9", "work", TABS_GROUP),
+      row("spaces.new", "New Space", "Spaces", ["workspace"]),
+      space,
+    ];
+    const ranked = rankCommands(items, "work", {});
+    expect(ranked[0]).toBe(space);
+    expect(orderGroups(ranked, true)).toEqual(["Spaces", TABS_GROUP]);
+  });
+
+  it("does not let a weak match on a Spaces command outrank a tab", () => {
+    // "pi" is a subsequence of "Spaces: Overview", but no space is named that.
+    const ranked = rankCommands(
+      [
+        { id: "spaces.overview", title: "Spaces: Overview", group: "Spaces", run: () => {} },
+        { id: "tab:8", title: "pi", group: TABS_GROUP, run: () => {} },
+      ],
+      "pi",
+      {},
+    );
+    expect(orderGroups(ranked, true)).toEqual([TABS_GROUP, "Spaces"]);
   });
 });
 
