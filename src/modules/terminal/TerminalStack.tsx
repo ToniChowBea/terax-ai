@@ -97,7 +97,7 @@ export function TerminalStack({
             className="absolute inset-0"
             style={{
               visibility: tabVisible ? "visible" : "hidden",
-              pointerEvents: tabVisible ? "auto" : "none",
+              pointerEvents: tabVisible ? undefined : "none",
             }}
             aria-hidden={!tabVisible}
           >

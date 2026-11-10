@@ -116,7 +116,7 @@ const GhosttyTerminalPane = memo(
         className="zoom-exempt relative h-full w-full overflow-hidden"
         style={{
           visibility: visible ? "visible" : "hidden",
-          pointerEvents: visible ? "auto" : "none",
+          pointerEvents: visible ? undefined : "none",
         }}
         onPointerDownCapture={
           blocks

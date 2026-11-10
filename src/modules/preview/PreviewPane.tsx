@@ -80,7 +80,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         className="flex h-full w-full flex-col overflow-hidden bg-background"
         style={{
           visibility: visible ? "visible" : "hidden",
-          pointerEvents: visible ? "auto" : "none",
+          pointerEvents: visible ? undefined : "none",
         }}
       >
         <PreviewAddressBar
