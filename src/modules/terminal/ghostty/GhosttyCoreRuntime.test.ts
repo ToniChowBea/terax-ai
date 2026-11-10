@@ -562,6 +562,41 @@ describe("GhosttyCoreRuntime", () => {
     model.dispose();
   });
 
+  it("keeps the configured history after a pane widens past its creation width", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const config = { scrollbackLimit: 2_000 };
+    const output = new TextEncoder().encode(
+      Array.from({ length: 6_000 }, (_, i) => `line ${i}\r\n`).join(""),
+    );
+    // Sessions start at 80 columns and are resized to fit the pane.
+    const widened = await runtime.createModel({
+      leafId: 11,
+      cols: 80,
+      rows: 24,
+      config,
+    });
+    widened.resize(220, 40);
+    widened.write(output);
+    const native = await runtime.createModel({
+      leafId: 12,
+      cols: 220,
+      rows: 40,
+      config,
+    });
+    native.write(output);
+
+    // Before the fix the widened pane held about 280 lines. Ghostty prunes
+    // whole pages, so both land a little under the 2,000 configured.
+    expect(widened.scrollPosition().history).toBe(
+      native.scrollPosition().history,
+    );
+    expect(native.scrollPosition().history).toBeGreaterThan(1_700);
+    widened.dispose();
+    native.dispose();
+  });
+
   it("extracts linear and rectangular selections from scrollback", async () => {
     const runtime = new GhosttyCoreRuntime(() =>
       TeraxGhostty.loadBytes(wasmBytes.slice(0)),
@@ -1012,7 +1047,7 @@ describe("GhosttyCoreRuntime", () => {
 
   describe("global scrollback budget", () => {
     const MIB = 1024 * 1024;
-    const REQUEST = 9_600_000;
+    const REQUEST = 14_400_000; // 10,000 lines x 120 cols x 12 bytes
     const pump = (
       model: { write(bytes: Uint8Array): void },
       lines: number,
@@ -1026,14 +1061,14 @@ describe("GhosttyCoreRuntime", () => {
     it("divides the budget between models and returns it when they close", async () => {
       const runtime = new GhosttyCoreRuntime(
         () => TeraxGhostty.loadBytes(wasmBytes.slice(0)),
-        { scrollbackBudgetBytes: 12 * MIB },
+        { scrollbackBudgetBytes: 18 * MIB },
       );
       try {
         const create = (leafId: number) =>
           runtime.createModel({ leafId, cols: 120, rows: 40 });
         await create(1);
         expect(runtime.diagnostics()).toMatchObject({
-          scrollbackBudgetBytes: 12 * MIB,
+          scrollbackBudgetBytes: 18 * MIB,
           scrollbackRequestedBytes: REQUEST,
           scrollbackGrantedBytes: REQUEST,
         });
@@ -1041,13 +1076,13 @@ describe("GhosttyCoreRuntime", () => {
         await create(2);
         const shared = runtime.diagnostics();
         expect(shared.scrollbackRequestedBytes).toBe(2 * REQUEST);
-        expect(shared.scrollbackGrantedBytes).toBeLessThanOrEqual(12 * MIB);
-        expect(shared.scrollbackGrantedBytes).toBeGreaterThan(12 * MIB - 4);
+        expect(shared.scrollbackGrantedBytes).toBeLessThanOrEqual(18 * MIB);
+        expect(shared.scrollbackGrantedBytes).toBeGreaterThan(18 * MIB - 4);
 
         await create(3);
         const crowded = runtime.diagnostics();
-        expect(crowded.scrollbackGrantedBytes).toBeLessThanOrEqual(12 * MIB);
-        expect(crowded.scrollbackGrantedBytes).toBeGreaterThan(12 * MIB - 4);
+        expect(crowded.scrollbackGrantedBytes).toBeLessThanOrEqual(18 * MIB);
+        expect(crowded.scrollbackGrantedBytes).toBeGreaterThan(18 * MIB - 4);
 
         runtime.disposeModel(2);
         runtime.disposeModel(3);

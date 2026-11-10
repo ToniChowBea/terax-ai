@@ -104,6 +104,7 @@ export class GhosttyCoreRuntime {
         onReply: options.onReply,
         onEvent: options.onEvent,
         scrollbackByteLimit: this.grantForNewModel(options),
+        onScrollbackRequestGrow: () => this.rebalanceScrollback(),
         onDispose: () => {
           if (this.models.get(options.leafId) !== model) return;
           this.models.delete(options.leafId);

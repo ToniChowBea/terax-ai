@@ -78,6 +78,8 @@ const DEFAULT_MODES: TerminalModes = Object.freeze({
 type AdaptedGhosttyTerminalModelOptions = GhosttyTerminalModelOptions & {
   /** Initial scrollback byte limit when the global budget grants less than requested. */
   readonly scrollbackByteLimit?: number;
+  /** Called when a resize raises `requestedScrollbackBytes`, so the budget can grant it. */
+  readonly onScrollbackRequestGrow?: () => void;
 };
 
 /**
@@ -91,8 +93,16 @@ type AdaptedGhosttyTerminalModelOptions = GhosttyTerminalModelOptions & {
  */
 export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
   readonly backend: GhosttyTerminalModelOptions["backend"];
-  /** Scrollback bytes the configuration asks for, before the global budget. */
-  readonly requestedScrollbackBytes: number;
+  /**
+   * Scrollback bytes the configured line count needs at the widest width seen,
+   * before the global budget. It only grows: WebAssembly memory cannot shrink.
+   */
+  get requestedScrollbackBytes(): number {
+    return this.requestBytes;
+  }
+
+  private requestBytes: number;
+  private readonly onScrollbackRequestGrow: (() => void) | null;
 
   private readonly terminal: TeraxGhosttyTerminal;
   private plainLinks: {
@@ -150,11 +160,12 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.replySink = options.onReply ?? null;
     this.eventSink = options.onEvent ?? null;
     this.onDispose = options.onDispose ?? null;
+    this.onScrollbackRequestGrow = options.onScrollbackRequestGrow ?? null;
 
     this.scrollbackLines = normalizeScrollbackLines(
       options.config?.scrollbackLimit,
     );
-    this.requestedScrollbackBytes = requestedScrollbackBytes(
+    this.requestBytes = requestedScrollbackBytes(
       this.scrollbackLines,
       options.cols,
     );
@@ -329,6 +340,13 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     this.blockMatch = null;
     this.colsValue = cols;
     this.rowsValue = rows;
+    // Models start at 80 columns; without this a 220-column pane kept the
+    // byte cap of an 80-column one and held ~300 of 2,000 configured lines.
+    const request = requestedScrollbackBytes(this.scrollbackLines, cols);
+    if (request > this.requestBytes) {
+      this.requestBytes = request;
+      this.onScrollbackRequestGrow?.();
+    }
     this.contentRevision += 1;
     this.scrollPositionCurrent = false;
     this.invalidateRenderState();

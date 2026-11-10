@@ -5,15 +5,20 @@ export const MIN_SCROLLBACK_BYTES = MIB;
 const MAX_SCROLLBACK_BYTES = 64 * MIB;
 const DEFAULT_SCROLLBACK_LINES = 10_000;
 const MAX_SCROLLBACK_LINES = 100_000;
-const APPROXIMATE_BYTES_PER_SCROLLBACK_CELL = 8;
+/**
+ * Ghostty measures 8.5-10 page bytes per cell, and prunes whole pages, so the
+ * estimate carries headroom; at 8 the byte cap, not the line count, decided how
+ * much history was kept (about 65% of the configured lines).
+ */
+const APPROXIMATE_BYTES_PER_SCROLLBACK_CELL = 12;
 
 /**
  * Upper bound on scrollback bytes summed over every terminal. It is the
- * default limit of twenty 120-column terminals (10,000 lines, 8 bytes per
- * cell, about 9.6 MB each), so twenty ordinary tabs are never scaled; beyond
+ * default limit of twenty 120-column terminals (10,000 lines, 12 bytes per
+ * cell, about 14.4 MB each), so twenty ordinary tabs are never scaled; beyond
  * that the terminals share the budget fairly instead of growing without bound.
  */
-export const DEFAULT_SCROLLBACK_BUDGET_BYTES = 192 * MIB;
+export const DEFAULT_SCROLLBACK_BUDGET_BYTES = 275 * MIB;
 
 /**
  * What every terminal keeps even when the budget is exhausted: about two

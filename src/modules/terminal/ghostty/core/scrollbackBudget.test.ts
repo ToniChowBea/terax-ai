@@ -15,7 +15,7 @@ const total = (values: readonly number[]) =>
 
 describe("scrollback request", () => {
   it("derives the byte limit from lines and columns within fixed bounds", () => {
-    expect(requestedScrollbackBytes(10_000, 120)).toBe(9_600_000);
+    expect(requestedScrollbackBytes(10_000, 120)).toBe(14_400_000);
     expect(requestedScrollbackBytes(10, 80)).toBe(MIN_SCROLLBACK_BYTES);
     expect(requestedScrollbackBytes(100_000, 500)).toBe(64 * MIB);
   });
