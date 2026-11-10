@@ -27,6 +27,8 @@ export type TerminalSelectionControllerOptions = {
   readonly gridShiftY?: () => number;
   readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
   readonly onChange: () => void;
+  /** A pointer gesture finished and left a selection. */
+  readonly onSelectionEnd?: () => void;
 };
 
 export class TerminalSelectionController {
@@ -194,6 +196,7 @@ export class TerminalSelectionController {
     }
     this.pointerId = null;
     this.stopAutoScroll();
+    if (this.meaningful) this.options.onSelectionEnd?.();
   };
 
   private updateFocus(

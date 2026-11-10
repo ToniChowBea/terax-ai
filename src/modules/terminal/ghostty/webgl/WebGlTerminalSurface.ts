@@ -67,6 +67,7 @@ export type WebGlTerminalSurfaceOptions = {
   readonly onFrame?: () => void;
   readonly onRequestFocus?: () => void;
   readonly onOpenLink?: (uri: string) => void;
+  readonly onSelectionEnd?: () => void;
 };
 
 export type WebGlTerminalSurfaceStats = {
@@ -197,6 +198,7 @@ export class WebGlTerminalSurface
       cellSize: () => this.cellSize(),
       shouldIgnoreTarget: (target) =>
         target instanceof Node && this.scrollbar.contains(target),
+      onSelectionEnd: options.onSelectionEnd,
       onChange: () => {
         if (this.applyingFit) return;
         this.runtime.schedule(this);

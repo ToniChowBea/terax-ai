@@ -199,6 +199,23 @@ describe("terminal selection pointer ownership", () => {
     fixture.controller.dispose();
   });
 
+  it("reports the end of a gesture that selected text, never a click or a lost capture", () => {
+    const fixture = dragFixture();
+    fixture.pointer("pointerdown", 15);
+    fixture.pointer("pointerup", 15);
+    expect(fixture.onSelectionEnd).not.toHaveBeenCalled();
+    fixture.pointer("pointerdown", 15);
+    fixture.pointer("pointermove", 45);
+    expect(fixture.onSelectionEnd).not.toHaveBeenCalled();
+    fixture.pointer("pointerup", 45);
+    expect(fixture.onSelectionEnd).toHaveBeenCalledTimes(1);
+    fixture.pointer("pointerdown", 15);
+    fixture.pointer("pointermove", 45);
+    fixture.pointer("lostpointercapture", 45);
+    expect(fixture.onSelectionEnd).toHaveBeenCalledTimes(1);
+    fixture.controller.dispose();
+  });
+
   it("keeps the pending anchor pinned across reflow and discards it on lost capture", () => {
     const fixture = dragFixture();
     fixture.pointer("pointerdown", 15);
@@ -327,6 +344,7 @@ function dragFixture(
       scrollBy: vi.fn(() => false),
     } as unknown as GhosttyTerminalModelApi);
   const onChange = vi.fn();
+  const onSelectionEnd = vi.fn();
   const controller = new TerminalSelectionController({
     model,
     target: target as unknown as HTMLElement,
@@ -334,11 +352,13 @@ function dragFixture(
     gridShiftY,
     shouldIgnoreTarget: () => false,
     onChange,
+    onSelectionEnd,
   });
   return {
     controller,
     model,
     onChange,
+    onSelectionEnd,
     tracked: () => tracked,
     pointer: (type: string, clientX: number, clientY = 10) =>
       target.dispatchEvent(

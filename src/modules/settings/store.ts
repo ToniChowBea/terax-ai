@@ -183,6 +183,8 @@ export type Preferences = {
   terminalRenderer: "auto" | "webgl";
   terminalScreenReader: boolean;
   terminalCursorBlink: boolean;
+  /** Fork-only: copy a terminal selection as soon as the drag ends. */
+  terminalCopyOnSelect: boolean;
   terminalCursorStyle: TerminalCursorStyle;
   terminalFontFamily: string;
   terminalFontWeight: string;
@@ -281,6 +283,7 @@ const KEY_EXPLORER_GIT_DECORATIONS = "explorerGitDecorations";
 const KEY_TERMINAL_RENDERER = "terminalRenderer";
 const KEY_TERMINAL_SCREEN_READER = "terminalScreenReader";
 const KEY_TERMINAL_CURSOR_BLINK = "terminalCursorBlink";
+const KEY_TERMINAL_COPY_ON_SELECT = "terminalCopyOnSelect";
 const KEY_TERMINAL_CURSOR_STYLE = "terminalCursorStyle";
 const KEY_TERMINAL_FONT_FAMILY = "terminalFontFamily";
 const KEY_TERMINAL_FONT_WEIGHT = "terminalFontWeight";
@@ -378,6 +381,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminalRenderer: "auto",
   terminalScreenReader: false,
   terminalCursorBlink: false,
+  terminalCopyOnSelect: false,
   terminalCursorStyle: "bar",
   terminalFontFamily: "",
   terminalFontWeight: "normal",
@@ -542,6 +546,7 @@ export async function loadPreferences(): Promise<Preferences> {
     terminalCursorBlink:
       get<boolean>(KEY_TERMINAL_CURSOR_BLINK) ??
       DEFAULT_PREFERENCES.terminalCursorBlink,
+    terminalCopyOnSelect: get<boolean>(KEY_TERMINAL_COPY_ON_SELECT) === true,
     terminalCursorStyle: coerceTerminalCursorStyle(
       get<unknown>(KEY_TERMINAL_CURSOR_STYLE),
     ),
@@ -858,6 +863,10 @@ export async function setTerminalCursorBlink(value: boolean): Promise<void> {
   await writePref(KEY_TERMINAL_CURSOR_BLINK, value);
 }
 
+export async function setTerminalCopyOnSelect(value: boolean): Promise<void> {
+  await writePref(KEY_TERMINAL_COPY_ON_SELECT, value);
+}
+
 export function coerceTerminalCursorStyle(value: unknown): TerminalCursorStyle {
   return value === "bar" || value === "block" || value === "underline"
     ? value
@@ -1048,6 +1057,7 @@ export async function onPreferencesChange(
     [KEY_TERMINAL_RENDERER]: "terminalRenderer",
     [KEY_TERMINAL_SCREEN_READER]: "terminalScreenReader",
     [KEY_TERMINAL_CURSOR_BLINK]: "terminalCursorBlink",
+    [KEY_TERMINAL_COPY_ON_SELECT]: "terminalCopyOnSelect",
     [KEY_TERMINAL_CURSOR_STYLE]: "terminalCursorStyle",
     [KEY_TERMINAL_FONT_FAMILY]: "terminalFontFamily",
     [KEY_TERMINAL_FONT_WEIGHT]: "terminalFontWeight",

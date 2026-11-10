@@ -24,6 +24,7 @@ import {
   setExplorerGitDecorations,
   setRestoreWindowState,
   setShowHidden,
+  setTerminalCopyOnSelect,
   setTerminalCursorBlink,
   setTerminalCursorStyle,
   setTerminalFontFamily,
@@ -101,6 +102,9 @@ export function GeneralSection() {
     (s) => s.terminalScreenReader,
   );
   const terminalCursorBlink = usePreferencesStore((s) => s.terminalCursorBlink);
+  const terminalCopyOnSelect = usePreferencesStore(
+    (s) => s.terminalCopyOnSelect,
+  );
   const terminalCursorStyle = usePreferencesStore((s) => s.terminalCursorStyle);
   const terminalFontFamily = usePreferencesStore((s) => s.terminalFontFamily);
   const terminalFontWeight = usePreferencesStore((s) => s.terminalFontWeight);
@@ -282,6 +286,15 @@ export function GeneralSection() {
           <Switch
             checked={terminalCursorBlink}
             onCheckedChange={(v) => void setTerminalCursorBlink(v)}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Copy on select"
+          description="Copy terminal text to the clipboard as soon as you finish selecting it."
+        >
+          <Switch
+            checked={terminalCopyOnSelect}
+            onCheckedChange={(v) => void setTerminalCopyOnSelect(v)}
           />
         </SettingRow>
         <SettingRow

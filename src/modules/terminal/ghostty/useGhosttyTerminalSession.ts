@@ -741,6 +741,11 @@ async function initializeSessionGeneration(
     onFirstFrame: () => mark("firstFrameMs"),
     onFrame: () => ghosttyBlocks(session.leafId)?.present(),
     onRequestFocus: () => focusGhosttySession(session.leafId),
+    onSelectionEnd: () => {
+      if (!usePreferencesStore.getState().terminalCopyOnSelect) return;
+      const text = session.surface?.getSelection();
+      if (text) void writeTerminalClipboard(text).catch(() => {});
+    },
     onOpenLink: (uri: string) => {
       void openExternalUrl(uri, () => focusGhosttySession(session.leafId));
     },
