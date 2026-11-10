@@ -8,6 +8,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { FileIcon } from "@/modules/explorer/FileIcon";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -25,7 +26,7 @@ import {
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { COMMAND_GROUPS, SPACE_ITEM_PREFIX } from "./commands";
 import { TAB_ITEM_PREFIX, TABS_GROUP } from "./tabItems";
 import { useCommandHistory } from "./hooks/useCommandHistory";
@@ -33,23 +34,41 @@ import {
   CONTENT_SEARCH_MIN_QUERY,
   useContentSearch,
 } from "./hooks/useContentSearch";
+import { useFileSearch } from "./hooks/useFileSearch";
 import { fuzzyBest } from "./lib/fuzzy";
 import { MODE_HINTS, parseQuery } from "./lib/mode";
 import { mruRank, mruSnapshot, recordUse } from "./lib/mru";
-import type { PaletteItem } from "./types";
+import {
+  boostRecent,
+  type FileHit,
+  parseFileTarget,
+  pathParts,
+  recentToHits,
+  type Segment,
+} from "./lib/quickOpen";
+import { recentFiles, recordRecentFile } from "./lib/recentFiles";
+import type {
+  OpenFileTarget,
+  PaletteBase,
+  PaletteInitialMode,
+  PaletteItem,
+} from "./types";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  initialMode?: "commands" | "content";
+  initialMode?: PaletteInitialMode;
   commandItems: PaletteItem[];
   workspaceRoot: string | null;
   onOpenContentHit: (path: string, line: number) => void;
+  onOpenFile: (path: string, target: OpenFileTarget) => void;
   insertCommand: ((cmd: string) => void) | null;
 };
 
 const SHORTCUTS_BY_ID = new Map(SHORTCUTS.map((s) => [s.id, s]));
 const THEME_PREVIEW_DELAY_MS = 140;
+const FILE_RESULT_LIMIT = 50;
+const RECENT_DISPLAY_LIMIT = 12;
 
 export function CommandPalette({
   open,
@@ -58,15 +77,18 @@ export function CommandPalette({
   commandItems,
   workspaceRoot,
   onOpenContentHit,
+  onOpenFile,
   insertCommand,
 }: Props) {
   const [query, setQuery] = useState("");
   const [value, setValue] = useState("");
   const [page, setPage] = useState<"root" | "themes">("root");
+  const [base, setBase] = useState<PaletteBase>("commands");
   const userShortcuts = usePreferencesStore((s) => s.shortcuts);
+  const showHidden = usePreferencesStore((s) => s.showHidden);
   const { themeId, customThemes, setThemeId, previewThemeId } = useTheme();
 
-  const parsed = parseQuery(query);
+  const parsed = parseQuery(query, base);
   const inThemes = page === "themes";
   const themeFilter = inThemes ? query.trim() : "";
 
@@ -80,7 +102,39 @@ export function CommandPalette({
     open && !inThemes && parsed.mode === "history",
   );
 
+  const fileTarget = useMemo(
+    () => parseFileTarget(parsed.mode === "files" ? parsed.term : ""),
+    [parsed.mode, parsed.term],
+  );
+  const filesActive = open && !inThemes && parsed.mode === "files";
+  const files = useFileSearch(
+    workspaceRoot,
+    fileTarget.query,
+    filesActive,
+    showHidden,
+  );
+
   const mru = useMemo(() => (open ? mruSnapshot() : {}), [open]);
+  const recent = useMemo(
+    () => (open && workspaceRoot ? recentFiles(workspaceRoot) : []),
+    [open, workspaceRoot],
+  );
+
+  const fileRows = useMemo<FileHit[]>(() => {
+    if (!filesActive || !workspaceRoot) return [];
+    if (!fileTarget.query) {
+      return recentToHits(workspaceRoot, recent, RECENT_DISPLAY_LIMIT);
+    }
+    return boostRecent(files.hits, recent).slice(0, FILE_RESULT_LIMIT);
+  }, [filesActive, workspaceRoot, fileTarget.query, recent, files.hits]);
+
+  // The first row is selected whenever the rows change, not only on the next
+  // keystroke: results arrive after the query that asked for them.
+  const firstFilePath = fileRows[0]?.path;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fileRows re-arms the selection when a new result set lands with the same first file.
+  useEffect(() => {
+    if (filesActive) setValue(firstFilePath ? `file:${firstFilePath}` : "");
+  }, [filesActive, firstFilePath, fileRows]);
 
   const listsItems = parsed.mode === "commands" || parsed.mode === "tabs";
   const rankedCommands = useMemo(() => {
@@ -117,6 +171,8 @@ export function CommandPalette({
     previewThemeId(null);
   }, [previewThemeId]);
 
+  const openSideRef = useRef(false);
+
   const handleOpenChange = useCallback(
     (next: boolean) => {
       if (!next) resetPalette();
@@ -128,6 +184,7 @@ export function CommandPalette({
   useEffect(() => {
     if (!open) return;
     setQuery(initialMode === "content" ? "#" : "");
+    setBase(initialMode === "files" ? "files" : "commands");
     setPage("root");
     const handle = window.setTimeout(() => {
       document.getElementById("terax-command-palette-input")?.focus();
@@ -182,9 +239,24 @@ export function CommandPalette({
 
   const openContent = useCallback(
     (path: string, line: number) => {
+      if (workspaceRoot) recordRecentFile(workspaceRoot, path);
       runAfterClose(() => onOpenContentHit(path, line));
     },
-    [onOpenContentHit, runAfterClose],
+    [onOpenContentHit, runAfterClose, workspaceRoot],
+  );
+
+  const openFile = useCallback(
+    (path: string) => {
+      const side = openSideRef.current;
+      openSideRef.current = false;
+      if (workspaceRoot) recordRecentFile(workspaceRoot, path);
+      const target: OpenFileTarget = {};
+      if (fileTarget.line !== undefined) target.line = fileTarget.line;
+      if (fileTarget.column !== undefined) target.column = fileTarget.column;
+      if (side) target.side = true;
+      runAfterClose(() => onOpenFile(path, target));
+    },
+    [fileTarget.line, fileTarget.column, onOpenFile, runAfterClose, workspaceRoot],
   );
 
   const runHistory = useCallback(
@@ -205,6 +277,7 @@ export function CommandPalette({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") openSideRef.current = e.metaKey || e.ctrlKey;
       if (!inThemes) return;
       if (e.key === "Escape" || (e.key === "Backspace" && query.length === 0)) {
         e.preventDefault();
@@ -217,13 +290,17 @@ export function CommandPalette({
 
   const placeholder = inThemes
     ? "Search themes..."
-    : parsed.mode === "content"
-      ? "Find text in files..."
-      : parsed.mode === "history"
-        ? "Search command history..."
-        : parsed.mode === "tabs"
-          ? "Go to an open tab..."
-          : "Type a command or tab, > history, # files, @ tabs";
+    : parsed.mode === "files"
+      ? "Go to file... (add :line to jump)"
+      : parsed.mode === "content"
+        ? "Find text in files..."
+        : parsed.mode === "history"
+          ? "Search command history..."
+          : parsed.mode === "tabs"
+            ? "Go to an open tab..."
+            : "Type a command or tab, / files, # text, > history, @ tabs";
+
+  const showFiles = !inThemes && parsed.mode === "files";
 
   return (
     <CommandDialog
@@ -249,8 +326,18 @@ export function CommandPalette({
         />
         {/* Radix wraps the list in a display:table div that grows to the
             widest row, so a long tab row pushed every row past the edge. */}
-        <ScrollArea className="max-h-[420px] [&_[data-slot=scroll-area-viewport]>div]:block!">
-          <CommandList className="max-h-none overflow-visible pr-3">
+        <ScrollArea
+          className={cn(
+            showFiles ? "h-[372px]" : "max-h-[420px]",
+            "[&_[data-slot=scroll-area-viewport]>div]:block!",
+          )}
+        >
+          <CommandList
+            className="max-h-none overflow-visible pr-3"
+            onClickCapture={(e) => {
+              openSideRef.current = e.metaKey || e.ctrlKey;
+            }}
+          >
             {inThemes ? (
               <CommandGroup heading="Themes">
                 <CommandItem
@@ -309,6 +396,15 @@ export function CommandPalette({
                   );
                 })
               )
+            ) : parsed.mode === "files" ? (
+              <FilesBody
+                hasRoot={!!workspaceRoot}
+                query={fileTarget.query}
+                rows={fileRows}
+                search={files}
+                line={fileTarget.line}
+                onOpen={openFile}
+              />
             ) : parsed.mode === "content" ? (
               <CommandGroup heading="Contents">
                 {!workspaceRoot ? (
@@ -380,7 +476,8 @@ export function CommandPalette({
               </CommandGroup>
             ) : (
               <CommandGroup heading="Search modes">
-                {MODE_HINTS.map((hint) => (
+                {MODE_HINTS.filter((hint) => hint.bases.includes(base)).map(
+                  (hint) => (
                   <CommandItem
                     key={hint.sigil}
                     value={`hint:${hint.sigil}`}
@@ -392,13 +489,164 @@ export function CommandPalette({
                     </kbd>
                     <span>{hint.label}</span>
                   </CommandItem>
-                ))}
+                  ),
+                )}
               </CommandGroup>
             )}
           </CommandList>
         </ScrollArea>
+        {showFiles ? <FilesFooter /> : null}
       </Command>
     </CommandDialog>
+  );
+}
+
+function FilesBody({
+  hasRoot,
+  query,
+  rows,
+  search,
+  line,
+  onOpen,
+}: {
+  hasRoot: boolean;
+  query: string;
+  rows: FileHit[];
+  search: { loading: boolean; error: string | null; retry: () => void };
+  line?: number;
+  onOpen: (path: string) => void;
+}) {
+  if (!hasRoot) {
+    return (
+      <CommandGroup heading="Files">
+        <StatusItem label="Open a folder to search its files" />
+      </CommandGroup>
+    );
+  }
+  if (!query) {
+    return (
+      <CommandGroup heading={rows.length > 0 ? "Recent files" : "Files"}>
+        {rows.length === 0 ? (
+          <StatusItem label="Type a file name" />
+        ) : (
+          rows.map((hit) => (
+            <FileRow
+              key={hit.path}
+              hit={hit}
+              line={line}
+              onOpen={onOpen}
+            />
+          ))
+        )}
+      </CommandGroup>
+    );
+  }
+  return (
+    <CommandGroup heading="Files">
+      <AsyncBody
+        loading={search.loading}
+        error={search.error}
+        empty={rows.length === 0}
+        emptyLabel="No matching files"
+        onRetry={search.retry}
+      >
+        {rows.map((hit) => (
+          <FileRow
+            key={hit.path}
+            hit={hit}
+            line={line}
+            onOpen={onOpen}
+          />
+        ))}
+      </AsyncBody>
+    </CommandGroup>
+  );
+}
+
+const FileRow = memo(function FileRow({
+  hit,
+  line,
+  onOpen,
+}: {
+  hit: FileHit;
+  line?: number;
+  onOpen: (path: string) => void;
+}) {
+  const parts = useMemo(
+    () => pathParts(hit.rel, hit.indices),
+    [hit.rel, hit.indices],
+  );
+  return (
+    <CommandItem
+      value={`file:${hit.path}`}
+      onSelect={() => onOpen(hit.path)}
+      className="h-9 gap-2.5 py-0 text-[12.5px]"
+    >
+      <FileIcon name={hit.name} className="size-4 shrink-0" />
+      <span className="max-w-[65%] shrink-0 truncate">
+        <Marked
+          segments={parts.name}
+          plain="text-foreground/85"
+          marked="font-semibold text-foreground"
+        />
+      </span>
+      {parts.dir.length > 0 ? (
+        <span className="min-w-0 flex-1 truncate text-[11px] font-normal text-muted-foreground">
+          <Marked
+            segments={parts.dir}
+            plain=""
+            marked="font-medium text-foreground/90"
+          />
+        </span>
+      ) : null}
+      {line !== undefined ? (
+        <CommandShortcut className="font-mono tracking-normal">
+          :{line}
+        </CommandShortcut>
+      ) : null}
+    </CommandItem>
+  );
+});
+
+function Marked({
+  segments,
+  plain,
+  marked,
+}: {
+  segments: Segment[];
+  plain: string;
+  marked: string;
+}) {
+  return (
+    <>
+      {segments.map((seg, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and never reordered.
+        <span key={i} className={cn(seg.hit ? marked : plain)}>
+          {seg.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function FilesFooter() {
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-4 border-t border-border/50 px-4 text-[11px] text-muted-foreground">
+      <FooterHint keys="↑↓" label="navigate" />
+      <FooterHint keys="↵" label="open" />
+      <FooterHint keys=":42" label="go to line" />
+    </div>
+  );
+}
+
+function FooterHint({ keys, label }: { keys: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px]">
+        {keys}
+      </kbd>
+      {label}
+    </span>
   );
 }
 

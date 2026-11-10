@@ -84,6 +84,9 @@ export async function openSsh(
         { headers },
       ),
     resize: (c, r) => invoke("ssh_resize", { id, cols: c, rows: r }),
+    // Theme colours answer a local PTY's colour queries; an SSH channel has
+    // no such reply path, so there is nothing to update.
+    setColors: async () => {},
     close: async () => {
       if (closed) return;
       closed = true;

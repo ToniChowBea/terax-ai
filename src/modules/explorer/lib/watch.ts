@@ -17,7 +17,11 @@ export function watchAdd(
   workspace: WorkspaceEnv = currentWorkspaceEnv(),
 ): void {
   if (paths.length === 0 && files.length === 0) return;
-  void invoke("fs_watch_add", { paths, files, workspace }).catch(() => {});
+  void invoke("fs_watch_add", {
+    paths,
+    files,
+    workspace,
+  }).catch(() => {});
 }
 
 export function watchRemove(
@@ -26,7 +30,11 @@ export function watchRemove(
   workspace: WorkspaceEnv = currentWorkspaceEnv(),
 ): void {
   if (paths.length === 0 && files.length === 0) return;
-  void invoke("fs_watch_remove", { paths, files, workspace }).catch(() => {});
+  void invoke("fs_watch_remove", {
+    paths,
+    files,
+    workspace,
+  }).catch(() => {});
 }
 
 export function listenFsChanged(

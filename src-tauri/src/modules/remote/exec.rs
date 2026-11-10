@@ -179,13 +179,17 @@ pub(crate) fn rank_search(root: &str, listing: &str, query: &str, limit: usize) 
     let hits = scored
         .into_iter()
         .take(limit)
-        .map(|(_, i)| {
+        .map(|(score, i)| {
             let (full, is_dir) = &entries[i];
             SearchHit {
                 path: full.clone(),
                 rel: relative(root, full),
                 name: path::basename(full).to_owned(),
                 is_dir: *is_dir,
+                score,
+                // ponytail: remote hits carry no match positions, so the file
+                // picker shows them unhighlighted; fill via Pattern::indices if wanted.
+                indices: Vec::new(),
             }
         })
         .collect();

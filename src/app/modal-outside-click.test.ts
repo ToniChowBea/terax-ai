@@ -9,10 +9,15 @@ import { expect, it } from "vitest";
 // open. Visible panes must inherit instead.
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const FORCED_AUTO = /pointerEvents:[^,\n]*"auto"/;
+// Not panes: the 20px copy proxy put under the pointer for the native
+// context menu on a right-click.
+const ALLOWED = new Set(["modules/terminal/ghostty/input/TerminalNativeSelection.ts"]);
 
 it("no pane opts out of a modal menu's outside-click handling", () => {
   const offenders = (readdirSync(SRC, { recursive: true }) as string[])
+    .map((file) => file.replace(/\\/g, "/"))
     .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .filter((file) => !ALLOWED.has(file))
     .filter((file) => FORCED_AUTO.test(readFileSync(join(SRC, file), "utf8")));
   expect(offenders).toEqual([]);
 });

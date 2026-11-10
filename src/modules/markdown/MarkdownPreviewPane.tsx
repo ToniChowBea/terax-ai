@@ -1,28 +1,27 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
+import { checkReadable } from "@/modules/ai/lib/security";
 import { cn } from "@/lib/utils";
-import { localWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
-import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
-import { Streamdown } from "streamdown";
+import { useAssetGrant } from "@/lib/useAssetGrant";
+import type { WorkspaceEnv } from "@/modules/workspace";
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
+import { defaultRehypePlugins, Streamdown } from "streamdown";
+import { previewBoundary, rehypeLocalImages } from "./lib/assetPath";
 import { MarkdownLink } from "./MarkdownLink";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
-
-type ReadResult =
-  | { kind: "text"; content: string; size: number }
-  | { kind: "binary"; size: number }
-  | { kind: "toolarge"; size: number; limit: number };
-
-type Status =
-  | { kind: "loading" }
-  | { kind: "ready"; content: string }
-  | { kind: "binary" }
-  | { kind: "toolarge"; size: number; limit: number }
-  | { kind: "error"; message: string };
+import { useMarkdownDocument } from "./useMarkdownDocument";
 
 type Props = {
   path: string;
   /** Fork-only (SSH port): remote host of this file; absent means local. */
   workspace?: WorkspaceEnv;
+  /** Images load only from beneath this folder (the document's own folder if it lies outside). */
+  workspaceRoot?: string | null;
   visible: boolean;
   onSetView: (mode: "rendered" | "raw") => void;
 };
@@ -32,35 +31,34 @@ const components = { a: MarkdownLink, code: MarkdownCode };
 export function MarkdownPreviewPane({
   path,
   workspace,
+  workspaceRoot = null,
   visible,
   onSetView,
 }: Props) {
-  const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const status = useMarkdownDocument(path, visible, workspace);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollTopRef = useRef(0);
+  const content = status.kind === "ready" ? status.content : null;
 
-  useEffect(() => {
-    let cancelled = false;
-    setStatus({ kind: "loading" });
-    invoke<ReadResult>("fs_read_file", {
-      path,
-      workspace: workspace ?? localWorkspaceEnv(),
-    })
-      .then((res) => {
-        if (cancelled) return;
-        if (res.kind === "text") {
-          setStatus({ kind: "ready", content: res.content });
-        } else if (res.kind === "binary") {
-          setStatus({ kind: "binary" });
-        } else {
-          setStatus({ kind: "toolarge", size: res.size, limit: res.limit });
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setStatus({ kind: "error", message: String(e) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path, workspace]);
+  // A retargeted preview starts at the top, not at the old document's offset.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: path is the trigger.
+  useLayoutEffect(() => {
+    scrollTopRef.current = 0;
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [path]);
+
+  const onScroll = useCallback(() => {
+    scrollTopRef.current = scrollRef.current?.scrollTop ?? 0;
+  }, []);
+
+  // New text replaces blocks in place; put the view back where the reader was
+  // in case the swap collapsed the document for a frame.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && content !== null && el.scrollTop !== scrollTopRef.current) {
+      el.scrollTop = scrollTopRef.current;
+    }
+  }, [content]);
 
   return (
     <div
@@ -70,7 +68,7 @@ export function MarkdownPreviewPane({
       )}
     >
       <MarkdownViewToggle mode="rendered" onChange={onSetView} />
-      <div className="flex-1 overflow-auto">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
         <div className="px-8 py-6">
           {status.kind === "loading" && (
             <p className="text-[12px] text-muted-foreground">Loading…</p>
@@ -90,18 +88,58 @@ export function MarkdownPreviewPane({
               File is {status.size} bytes; limit {status.limit}.
             </p>
           )}
-          {status.kind === "ready" && (
-            <Streamdown
-              className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-              components={components}
-              mode="static"
-              parseIncompleteMarkdown={false}
-            >
-              {status.content}
-            </Streamdown>
+          {content !== null && (
+            <MarkdownBody
+              path={path}
+              // Fork-only (SSH port): a remote document's images are on the
+              // remote host, never under a local folder of the same name.
+              boundary={workspace ? null : previewBoundary(path, workspaceRoot)}
+              content={content}
+            />
           )}
         </div>
       </div>
     </div>
   );
 }
+
+const MarkdownBody = memo(function MarkdownBody({
+  path,
+  boundary,
+  content,
+}: {
+  path: string;
+  /** Null loads no local images. */
+  boundary: string | null;
+  content: string;
+}) {
+  const { urlFor: assetUrlFor, error: assetError, retry } = useAssetGrant(boundary);
+  const rehypePlugins = useMemo(() => {
+    const d = defaultRehypePlugins;
+    if (boundary === null) return [d.raw, d.sanitize, d.harden];
+    return [
+      d.raw,
+      d.sanitize,
+      rehypeLocalImages(path, (abs) => assetUrlFor(abs) ?? "data:,", {
+        boundary,
+        isReadable: (abs) => checkReadable(abs).ok,
+      }),
+      d.harden,
+    ];
+  }, [path, boundary, assetUrlFor]);
+
+  return (
+    <>
+    {assetError && <div className="mb-3 text-xs text-muted-foreground"><p role="alert">Local images unavailable: {assetError}</p><button type="button" className="underline" onClick={retry}>Retry images</button></div>}
+    <Streamdown
+      className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+      components={components}
+      rehypePlugins={rehypePlugins}
+      mode="static"
+      parseIncompleteMarkdown={false}
+    >
+      {content}
+    </Streamdown>
+    </>
+  );
+});

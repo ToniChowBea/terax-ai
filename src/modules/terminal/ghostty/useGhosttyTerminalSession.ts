@@ -1,4 +1,7 @@
 import { loadSessionRenderer } from "@/modules/terminal/ghostty/loadSessionRenderer";
+import { openExternalUrl } from "@/lib/external-link";
+import { localWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
+import { useSpaces } from "@/modules/spaces/lib/useSpaces";
 import {
   ensureGhosttyBlocks,
   ghosttyBlocks,
@@ -6,8 +9,12 @@ import {
 } from "@/modules/terminal/ghostty/ghosttyBlockSessions";
 import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
 import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
-import { openExternalUrl } from "@/lib/external-link";
-import { ensureMonoFontsLoaded, resolveFontFamily } from "@/lib/fonts";
+import {
+  ensureMonoFontsLoaded,
+  resolveFontFamily,
+  subscribeSymbolFonts,
+  symbolFontEpoch,
+} from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalBackendKind } from "@/modules/terminal/backend/contracts";
 import { setLeafPresentation } from "@/modules/terminal/lib/ptyPresentation";
@@ -15,7 +22,15 @@ import { PtyResizeDelivery } from "@/modules/terminal/lib/ptyResizeDelivery";
 import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { isAgentActivePty } from "../lib/agentActivity";
 import { openPty, type PtySession } from "../lib/pty-bridge";
 import { openRemoteSession } from "../lib/remoteOpener";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
@@ -24,16 +39,19 @@ import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
 import { getGhosttyCoreRuntime } from "./GhosttyCoreRuntime";
 import type { GhosttyTerminalModelApi } from "./GhosttyTerminalModel";
 import {
+  fontSpecKey,
   measureTerminalFont,
   readTerminalGpuTheme,
   rgbToInt,
   type TerminalFontSpec,
 } from "./gpu/terminalVisuals";
 import { getWebGpuTerminalRuntime } from "./gpu/WebGpuTerminalRuntime";
-import { webGpuTerminalRuntimeDiagnostics } from "./gpu/WebGpuTerminalRuntime";
 import { WebGpuTerminalSurface } from "./gpu/WebGpuTerminalSurface";
 import { GhosttyInputController } from "./input/GhosttyInputController";
-import { encodeTerminalSubmission } from "./input/terminalInputEncoding";
+import {
+  encodeTerminalSubmission,
+  enqueueTerminalInput,
+} from "./input/terminalInputEncoding";
 import type {
   WebGlTerminalSurface,
   WebGlTerminalSurfaceOptions,
@@ -67,14 +85,13 @@ type GhosttySession = {
   readonly remoteId?: string;
   /** Fork-only (SSH port): tmux session id this leaf attaches to. */
   readonly tmuxSession?: string;
-  /** Fork-only (SSH port): OSC 133 says a command is running (remote close guard). */
-  commandRunning?: boolean;
   initialCwd: string | undefined;
   lastCwd: string | null;
   model: GhosttyTerminalModelApi | null;
   surface: GhosttySurface | null;
   surfaceOptions: GhosttySurfaceBaseOptions | null;
   input: GhosttyInputController | null;
+  cancelFocusRetry: (() => void) | null;
   pty: PtySession | null;
   ptyResize: PtyResizeDelivery;
   writer: BoundedPtyWriter;
@@ -85,6 +102,11 @@ type GhosttySession = {
   startupError: string | null;
   rendererError: string | null;
   shellExited: boolean;
+  /** OSC 133 has been seen, so `commandRunning` can be trusted. */
+  promptIntegrated: boolean;
+  commandRunning: boolean;
+  /** The shell's prompts say whether a command started. */
+  commandTracked: boolean;
   disposed: boolean;
   generation: number;
   initializing: Promise<void> | null;
@@ -147,6 +169,7 @@ export function useGhosttyTerminalSession({
     (state) => state.terminalLetterSpacing,
   );
   const zoomLevel = usePreferencesStore((state) => state.zoomLevel);
+  const symbols = useSyncExternalStore(subscribeSymbolFonts, symbolFontEpoch);
   const font = useMemo<TerminalFontSpec>(
     () => ({
       family: resolveFontFamily(fontFamily),
@@ -154,8 +177,9 @@ export function useGhosttyTerminalSession({
       lineHeight: 1.2,
       letterSpacing,
       weight: fontWeight,
+      symbols,
     }),
-    [fontFamily, fontSize, fontWeight, letterSpacing, zoomLevel],
+    [fontFamily, fontSize, fontWeight, letterSpacing, zoomLevel, symbols],
   );
   const fontRef = useRef(font);
   fontRef.current = font;
@@ -191,6 +215,7 @@ export function useGhosttyTerminalSession({
     void initializeSession(session);
     return () => {
       if (session.container === node) {
+        session.cancelFocusRetry?.();
         session.surface?.detach();
         session.container = null;
         session.callbacks = {};
@@ -208,6 +233,7 @@ export function useGhosttyTerminalSession({
     const session = ensureSession(leafId, backend, initialCwdRef.current);
     session.visible = visible;
     session.focused = focused;
+    if (!visible || !focused) session.cancelFocusRetry?.();
     setLeafPresentation(leafId, visible, focused);
     ghosttyBlocks(leafId)?.setVisible(visible);
     const surface = session.surface;
@@ -244,6 +270,22 @@ export function useGhosttyTerminalSession({
     },
     [leafId],
   );
+  const writeAtPrompt = useCallback(
+    async (data: string) => {
+      const expected = sessions.get(leafId);
+      const pty = expected?.pty;
+      if (!pty) return false;
+      const { writeAtShellPrompt } = await import("../lib/promptInjection");
+      const session = sessions.get(leafId);
+      if (!session || session !== expected || session.pty !== pty) return false;
+      return writeAtShellPrompt(
+        session,
+        data,
+        () => !!session.pty && isAgentActivePty(session.pty.id),
+      );
+    },
+    [leafId],
+  );
   const focus = useCallback(() => focusGhosttySession(leafId), [leafId]);
   const getBuffer = useCallback(
     (maxLines = 200) => sessions.get(leafId)?.model?.readText(maxLines) ?? null,
@@ -255,17 +297,7 @@ export function useGhosttyTerminalSession({
   );
   const applyTheme = useCallback(() => {
     const session = sessions.get(leafId);
-    if (!session?.model || !session.surface) return;
-    const theme = readTerminalGpuTheme();
-    session.model.setColors(
-      rgbToInt(theme.foreground),
-      rgbToInt(theme.background),
-      rgbToInt(theme.cursor),
-      theme.palette.map(rgbToInt),
-    );
-    session.surface.setTheme(theme);
-    if (session.surfaceOptions)
-      session.surfaceOptions = { ...session.surfaceOptions, theme };
+    if (session) applyThemeToSession(session);
   }, [leafId]);
 
   const retry = useCallback(() => {
@@ -285,13 +317,39 @@ export function useGhosttyTerminalSession({
       model,
       retry,
       write,
+      writeAtPrompt,
       focus,
       getBuffer,
       getSelection,
       applyTheme,
     }),
-    [write, focus, getBuffer, getSelection, applyTheme, error, retry, model],
+    [
+      write,
+      writeAtPrompt,
+      focus,
+      getBuffer,
+      getSelection,
+      applyTheme,
+      error,
+      retry,
+      model,
+    ],
   );
+}
+
+function applyThemeToSession(session: GhosttySession): void {
+  if (!session.model || !session.surface) return;
+  const theme = readTerminalGpuTheme();
+  session.model.setColors(
+    rgbToInt(theme.foreground),
+    rgbToInt(theme.background),
+    rgbToInt(theme.cursor),
+    theme.palette.map(rgbToInt),
+  );
+  session.surface.setTheme(theme);
+  void session.pty?.setColors(theme).catch(() => {});
+  if (session.surfaceOptions)
+    session.surfaceOptions = { ...session.surfaceOptions, theme };
 }
 
 export function hasGhosttySession(leafId: number): boolean {
@@ -301,7 +359,7 @@ export function hasGhosttySession(leafId: number): boolean {
 export function writeToGhosttySession(leafId: number, data: string): boolean {
   const session = sessions.get(leafId);
   if (!session || session.shellExited || session.disposed) return false;
-  return session.writer.enqueue(textEncoder.encode(data));
+  return enqueueTerminalInput(session, textEncoder.encode(data));
 }
 
 export function submitToGhosttySession(leafId: number, text: string): boolean {
@@ -311,7 +369,7 @@ export function submitToGhosttySession(leafId: number, text: string): boolean {
     text,
     session.model?.modes().bracketedPaste ?? false,
   );
-  const accepted = session.writer.enqueue(textEncoder.encode(data));
+  const accepted = enqueueTerminalInput(session, textEncoder.encode(data));
   if (accepted) {
     const blocks = ghosttyBlocks(leafId);
     if (blocks) {
@@ -422,6 +480,7 @@ export function disposeGhosttySession(leafId: number): boolean {
   if (!session) return false;
   session.disposed = true;
   session.generation += 1;
+  session.cancelFocusRetry?.();
   session.input?.dispose();
   session.surface?.dispose();
   disposeGhosttyBlocks(leafId);
@@ -441,6 +500,7 @@ async function respawnGhosttySession(
   const session = sessions.get(leafId);
   if (!session || session.disposed) return false;
   session.generation += 1;
+  session.cancelFocusRetry?.();
   session.input?.dispose();
   session.input = null;
   session.surface?.dispose();
@@ -456,6 +516,9 @@ async function respawnGhosttySession(
   await session.pty?.close();
   session.pty = null;
   session.shellExited = false;
+  session.promptIntegrated = false;
+  session.commandRunning = false;
+  session.commandTracked = false;
   session.lastCwd = null;
   session.initialCwd = cwd ?? session.initialCwd;
   session.startupError = null;
@@ -466,71 +529,9 @@ async function respawnGhosttySession(
   return true;
 }
 
-export function ghosttySessionDiagnostics() {
-  return [...sessions.values()].map((session) => ({
-    leafId: session.leafId,
-    blocks: ghosttyBlocks(session.leafId)?.controller?.diagnostics() ?? null,
-    pty: session.pty?.id ?? null,
-    visible: session.visible,
-    focused: session.focused,
-    shellExited: session.shellExited,
-    startupError: session.startupError,
-    rendererError: session.rendererError,
-    model: session.model?.diagnostics() ?? null,
-    surface: session.surface?.diagnostics() ?? null,
-    ptyResize: session.ptyResize.diagnostics(),
-    pendingInputBytes: session.writer.pendingBytes,
-    startup: startupDiagnostics(session.startup),
-  }));
-}
-
-export function ghosttySessionResourceTotals() {
-  let modelCellCapacity = 0;
-  let modelRowCapacity = 0;
-  let scrollbackLines = 0;
-  let surfaceCpuBytes = 0;
-  let surfaceGpuBufferBytes = 0;
-  let canvasColorBytes = 0;
-  let estimatedSwapchainBytes = 0;
-
-  for (const session of sessions.values()) {
-    const model = session.model?.diagnostics();
-    modelCellCapacity += model?.bridgeCellCapacity ?? 0;
-    modelRowCapacity += model?.bridgeRowCapacity ?? 0;
-    scrollbackLines += model?.scrollbackLines ?? 0;
-    const surface = session.surface;
-    if (!surface) continue;
-    if (surface.backend === "ghostty-webgpu") {
-      const stats = surface.diagnostics();
-      surfaceCpuBytes += stats.cpuBufferBytes;
-      surfaceGpuBufferBytes += stats.gpuBufferBytes;
-      canvasColorBytes += stats.canvasColorBytes;
-      estimatedSwapchainBytes += stats.estimatedSwapchainBytes;
-      continue;
-    }
-    const stats = surface.diagnostics();
-    const renderer = stats.renderer;
-    if (!renderer) continue;
-    surfaceCpuBytes += renderer.cpuBufferBytes;
-    surfaceGpuBufferBytes += renderer.gpuBufferBytes;
-    canvasColorBytes += renderer.canvasColorBytes;
-  }
-
-  // The WebGPU swapchain belongs to the window canvases, not to the panes drawing into them.
-  const windowCanvasBytes =
-    webGpuTerminalRuntimeDiagnostics()?.canvases.colorBytes ?? 0;
-  canvasColorBytes += windowCanvasBytes;
-  estimatedSwapchainBytes += windowCanvasBytes * 3;
-
-  return {
-    modelCellCapacity,
-    modelRowCapacity,
-    scrollbackLines,
-    surfaceCpuBytes,
-    surfaceGpuBufferBytes,
-    canvasColorBytes,
-    estimatedSwapchainBytes,
-  };
+/** Live sessions, for the lazily loaded diagnostics (`sessionDiagnostics.ts`). */
+export function ghosttySessionsForDiagnostics() {
+  return sessions.values();
 }
 
 function ensureSession(
@@ -567,6 +568,7 @@ function ensureSession(
     surface: null,
     surfaceOptions: null,
     input: null,
+    cancelFocusRetry: null,
     pty: null,
     ptyResize,
     writer: new BoundedPtyWriter((error) => {
@@ -579,6 +581,9 @@ function ensureSession(
     startupError: null,
     rendererError: null,
     shellExited: false,
+    promptIntegrated: false,
+    commandRunning: false,
+    commandTracked: false,
     disposed: false,
     generation: 0,
     initializing: null,
@@ -602,6 +607,7 @@ function initializeSession(session: GhosttySession): Promise<void> {
     session,
     (generation) => initializeSessionGeneration(session, generation),
     (error) => {
+      session.cancelFocusRetry?.();
       session.shellExited = session.pty === null;
       if (!session.pty) {
         session.input?.dispose();
@@ -679,8 +685,13 @@ async function initializeSessionGeneration(
         `[terax] Ghostty semantic event queue dropped ${dropped} event(s)`,
       );
     },
+    onPromptEnd: (reportsCommandStart) => {
+      session.commandTracked = reportsCommandStart;
+    },
     onCommandState: (running) => {
+      session.promptIntegrated = true;
       session.commandRunning = running;
+      session.commandTracked = false;
       if (!running) mark("firstPromptMs");
     },
   });
@@ -746,8 +757,41 @@ async function initializeSessionGeneration(
       const text = session.surface?.getSelection();
       if (text) void writeTerminalClipboard(text).catch(() => {});
     },
-    onOpenLink: (uri: string) => {
-      void openExternalUrl(uri, () => focusGhosttySession(session.leafId));
+    // Opening, confirming and resolving links is only needed on a click.
+    onOpenLink: (link) => {
+      // Fork-only (SSH port): an SSH leaf's paths live on the remote host,
+      // which the path resolver (local stat, home and editor) cannot reach,
+      // so it opens web links only, as before.
+      if (session.remoteId) {
+        if (link.kind !== "path") {
+          void openExternalUrl(link.uri, () =>
+            focusGhosttySession(session.leafId),
+          );
+        }
+        return;
+      }
+      // Fork-only (SSH port): a local shell's paths resolve on this machine,
+      // even while the Explorer follows a remote host.
+      const workspace = { ...localWorkspaceEnv() };
+      const space = useSpaces.getState().activeId;
+      const isCurrent = () =>
+        !session.disposed &&
+        session.visible &&
+        sessions.get(session.leafId) === session &&
+        useSpaces.getState().activeId === space &&
+        workspaceScopeKey(localWorkspaceEnv()) ===
+          workspaceScopeKey(workspace);
+      const context = {
+        cwd: session.lastCwd ?? session.initialCwd ?? null,
+        workspace,
+        isCurrent,
+        focus: () => {
+          if (isCurrent()) focusGhosttySession(session.leafId);
+        },
+      };
+      void import("@/modules/terminal/lib/terminalLinks")
+        .then(({ activateTerminalLink }) => activateTerminalLink(link, context))
+        .catch(context.focus);
     },
   };
   session.surfaceOptions = surfaceBaseOptions;
@@ -840,6 +884,7 @@ async function initializeSessionGeneration(
     onExit: (code: number) => {
       if (session.disposed || generation !== session.generation) return;
       session.shellExited = true;
+      session.cancelFocusRetry?.();
       session.writer.detach();
       session.pty = null;
       session.callbacks.onExit?.(code);
@@ -863,6 +908,7 @@ async function initializeSessionGeneration(
         !!ghosttyBlocks(session.leafId),
         preferences.terminalShell || undefined,
         session.leafId,
+        theme,
       );
   if (session.disposed || generation !== session.generation) {
     await pty.close();
@@ -877,6 +923,11 @@ async function initializeSessionGeneration(
   session.writer.attach(pty);
   if (model.cols !== startCols || model.rows !== startRows) {
     session.ptyResize.send(model.cols, model.rows);
+  }
+  // The theme can change while fonts, WASM and the renderer load; a change
+  // before the PTY was attached found no PTY to tell, so look again.
+  if (JSON.stringify(readTerminalGpuTheme()) !== JSON.stringify(theme)) {
+    applyThemeToSession(session);
   }
 }
 
@@ -900,13 +951,15 @@ function createGhosttyInput(
       height: surface.cellSize().height,
     }),
     gridShiftY: () => surface.gridShiftY(),
+    scrollSpeed: () => usePreferencesStore.getState().terminalScrollSpeed,
+    macOptionAsAlt: () => usePreferencesStore.getState().terminalMacOptionAsAlt,
     onData: (bytes) => {
       if (
         ghosttyBlocks(session.leafId)?.getMode() === "prompt" &&
         !(bytes.length === 1 && bytes[0] === 3)
       )
         return;
-      session.writer.enqueue(bytes);
+      enqueueTerminalInput(session, bytes);
     },
     onKeyDown: (event) => {
       const blocks = ghosttyBlocks(session.leafId);
@@ -936,8 +989,43 @@ function focusSessionSurface(
   surface: GhosttySurface | null,
 ): void {
   const blocks = ghosttyBlocks(session.leafId);
-  if (blocks?.getMode() === "prompt" && blocks.focus) blocks.focus();
-  else surface?.focus();
+  session.cancelFocusRetry?.();
+  session.cancelFocusRetry = null;
+  if (blocks?.getMode() === "prompt" && blocks.focus) {
+    blocks.focus();
+    return;
+  }
+  if (!surface) return;
+  surface.focus();
+  const input = surface.inputElement();
+  if (document.activeElement === input) return;
+  // A refused focus (a hidden layer, an activating window) is retried, from a
+  // chunk that only loads when it happens.
+  let cancel: (() => void) | undefined;
+  let cancelled = false;
+  const generation = session.generation;
+  session.cancelFocusRetry = () => {
+    cancelled = true;
+    cancel?.();
+  };
+  void import("./input/focusRetry").then(({ focusUntilActive }) => {
+    if (!cancelled)
+      cancel = focusUntilActive(
+        input,
+        () => surface.focus(),
+        () =>
+          !cancelled &&
+          session.focused &&
+          session.visible &&
+          !session.disposed &&
+          !session.shellExited &&
+          !session.rendererError &&
+          session.container !== null &&
+          session.generation === generation &&
+          session.surface === surface &&
+          sessions.get(session.leafId) === session,
+      );
+  });
 }
 
 function applyBlockInputMode(
@@ -1060,6 +1148,7 @@ async function replaceGhosttySurface(
   generation: number,
   options: GhosttySurfaceBaseOptions,
 ): Promise<GhosttySurface | null> {
+  session.cancelFocusRetry?.();
   return loadSessionRenderer(
     session,
     generation,
@@ -1091,6 +1180,7 @@ async function replaceGhosttySurface(
 
 function reportRendererFailure(session: GhosttySession, error: Error): void {
   if (session.disposed) return;
+  session.cancelFocusRetry?.();
   logSurfaceError(session.surface?.backend ?? session.backend, error);
   session.rendererError = error.message;
   session.surface?.setVisible(false);
@@ -1150,20 +1240,6 @@ function createStartupTimings(): GhosttyStartupTimings {
   };
 }
 
-function startupDiagnostics(startup: GhosttyStartupTimings) {
-  return {
-    fontsReadyMs: startup.fontsReadyMs,
-    coreReadyMs: startup.coreReadyMs,
-    gpuReadyMs: startup.gpuReadyMs,
-    modelReadyMs: startup.modelReadyMs,
-    surfaceReadyMs: startup.surfaceReadyMs,
-    ptyReadyMs: startup.ptyReadyMs,
-    firstOutputMs: startup.firstOutputMs,
-    firstFrameMs: startup.firstFrameMs,
-    firstPromptMs: startup.firstPromptMs,
-  };
-}
-
 async function updateSessionFont(
   session: GhosttySession,
   font: TerminalFontSpec,
@@ -1186,16 +1262,6 @@ async function updateSessionFont(
   ghosttyBlocks(session.leafId)?.changed();
   if (session.surfaceOptions)
     session.surfaceOptions = { ...session.surfaceOptions, metrics };
-}
-
-function fontSpecKey(font: TerminalFontSpec): string {
-  return [
-    font.family,
-    font.size,
-    font.lineHeight,
-    font.letterSpacing,
-    font.weight,
-  ].join("|");
 }
 
 class BoundedPtyWriter {

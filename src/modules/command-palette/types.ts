@@ -21,10 +21,21 @@ export type PaletteItem = {
   run: () => void;
 };
 
+/** What a query without a sigil means. */
+export type PaletteBase = "commands" | "files";
 export type PaletteMode =
-  | "commands"
+  | PaletteBase
   | "history"
   | "content"
   | "help"
   /** Fork-only: "@" lists only open tabs. */
   | "tabs";
+export type PaletteInitialMode = PaletteBase | "content";
+
+/** How to open a file picked in the palette. */
+export type OpenFileTarget = {
+  line?: number;
+  column?: number;
+  /** Cmd/Ctrl+Enter. Hosts without side-by-side editors treat it as a plain open. */
+  side?: boolean;
+};

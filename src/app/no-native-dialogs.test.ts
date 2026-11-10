@@ -44,11 +44,12 @@ describe("native dialogs", () => {
   it("never uses window.confirm or window.prompt", () => {
     // Qualified calls anywhere, and a bare global call in expression
     // position (after `(`, `!`, `=`, `return`, `&&`...). A method declared
-    // or called as `this.confirm(...)` on our own classes is not a hit.
+    // or called as `this.confirm(...)` on our own classes is not a hit, nor
+    // is a typed signature such as `confirm(prompt: {...}): void`.
     const qualified =
       /\b(?:window|globalThis|self)\s*\.\s*(?:confirm|prompt)\b/;
     const bare =
-      /(?:^|[(!=,;?:&|]|\breturn|\bawait)\s*(?:confirm|prompt)\s*\(/m;
+      /(?:^|[(!=,;?:&|]|\breturn|\bawait)\s*(?:confirm|prompt)\s*\((?!\s*\w+\??\s*:)/m;
     const hits = files.flatMap(({ rel, text }) =>
       qualified.test(text) || bare.test(text) ? [rel] : [],
     );
