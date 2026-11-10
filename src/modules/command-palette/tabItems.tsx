@@ -90,7 +90,7 @@ export function createTabItems(ctx: TabItemsContext): PaletteItem[] {
       [
         tab.id === ctx.activeId ? "Current tab" : undefined,
         host ? host.label : undefined,
-        where,
+        where ? shortLocation(where) : undefined,
         showSpace ? space : undefined,
       ]
         .filter(Boolean)
@@ -159,6 +159,14 @@ export function createTabColorItems(
       run: () => setColor(activeTab.id, inherits ? "none" : null),
     },
   ];
+}
+
+/** Last two path segments ("naalya/Naalya-API"); URLs stay whole. The full
+ *  path is still in the keywords, so search is unaffected. */
+export function shortLocation(where: string): string {
+  if (where.includes("://")) return where;
+  const parts = where.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join("/") : where;
 }
 
 function basename(path: string): string {

@@ -223,7 +223,7 @@ export function CommandPalette({
         ? "Search command history..."
         : parsed.mode === "tabs"
           ? "Go to an open tab..."
-          : "Type a command or tab, > for history, # to find in files, @ for tabs";
+          : "Type a command or tab, > history, # files, @ tabs";
 
   return (
     <CommandDialog
@@ -247,7 +247,9 @@ export function CommandPalette({
           placeholder={placeholder}
           autoFocus
         />
-        <ScrollArea className="max-h-[420px]">
+        {/* Radix wraps the list in a display:table div that grows to the
+            widest row, so a long tab row pushed every row past the edge. */}
+        <ScrollArea className="max-h-[420px] [&_[data-slot=scroll-area-viewport]>div]:block!">
           <CommandList className="max-h-none overflow-visible pr-3">
             {inThemes ? (
               <CommandGroup heading="Themes">
@@ -447,7 +449,8 @@ function ActionItem({
   shortcutLabel: string | null;
   onRun: () => void;
 }) {
-  const rightLabel = item.disabledReason ?? item.trailing ?? shortcutLabel;
+  const text = item.disabledReason ?? item.trailing;
+  const rightLabel = text ?? shortcutLabel;
   return (
     <CommandItem
       value={`cmd:${item.id}`}
@@ -474,10 +477,11 @@ function ActionItem({
           style={{ background: item.accent }}
         />
       ) : null}
-      <span className="truncate">{item.title}</span>
+      {/* Title keeps its width (up to 70%); the trailing text gets the rest. */}
+      <span className="max-w-[70%] shrink-0 truncate">{item.title}</span>
       {rightLabel ? (
         <CommandShortcut
-          className={item.disabledReason ? "normal-case tracking-normal" : ""}
+          className={`min-w-0 truncate${text ? " normal-case tracking-normal" : ""}`}
         >
           {rightLabel}
         </CommandShortcut>

@@ -7,6 +7,7 @@ import { parseQuery } from "./lib/mode";
 import {
   createTabColorItems,
   createTabItems,
+  shortLocation,
   TAB_ITEM_PREFIX,
   TABS_GROUP,
   type TabItemsContext,
@@ -99,14 +100,24 @@ describe("palette tab items", () => {
   it("labels rows with space, host and location, and marks the current tab", () => {
     const items = createTabItems(ctx());
     const byId = new Map(items.map((i) => [i.id, i]));
+    // Paths are cut to their last two segments so the row fits.
     expect(byId.get("tab:1")?.trailing).toBe(
-      "Current tab · /Users/me/projects/terax · Work",
+      "Current tab · projects/terax · Work",
     );
     expect(byId.get("tab:3")?.trailing).toBe("pi · Homelab");
-    expect(byId.get("tab:2:22")?.trailing).toBe("/var/log/nginx · Work");
+    expect(byId.get("tab:2:22")?.trailing).toBe("log/nginx · Work");
     // A single space is not worth naming.
     const one = createTabItems(ctx({ spaces: [{ id: "work", name: "Work" }] }));
-    expect(one[0].trailing).toBe("Current tab · /Users/me/projects/terax");
+    expect(one[0].trailing).toBe("Current tab · projects/terax");
+  });
+
+  it("shortens paths but leaves short paths and URLs whole", () => {
+    expect(shortLocation("/Users/me/projects/terax")).toBe("projects/terax");
+    expect(shortLocation("C:\\Users\\me\\src")).toBe("me/src");
+    expect(shortLocation("/var/log")).toBe("/var/log");
+    expect(shortLocation("http://localhost:5173/a/b/c")).toBe(
+      "http://localhost:5173/a/b/c",
+    );
   });
 
   it("finds tabs by cwd, host, file name, path and space", () => {
